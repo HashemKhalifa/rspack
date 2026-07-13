@@ -1784,7 +1784,7 @@ impl Module for ConcatenatedModule {
       let name = name_space_name.expect("should have name_space_name");
       let define_getters = if !ns_obj.is_empty() {
         format!(
-          "{}({}, {{ {} }});\n",
+          "{}({}, {{{} }});\n",
           runtime_template.render_runtime_globals(&RuntimeGlobals::DEFINE_PROPERTY_GETTERS),
           name,
           ns_obj.join(",")

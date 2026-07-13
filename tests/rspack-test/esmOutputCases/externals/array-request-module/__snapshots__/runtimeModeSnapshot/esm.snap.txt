@@ -1,11 +1,11 @@
 ```mjs title=main.mjs
-import { __rspack_context } from "./runtime.mjs";
+import { __rspack_require, __rspack_compat_get_default_export } from "./runtime.mjs";
 import * as __rspack_external_fs from "fs";
 
 // fs-promises
 
 
-var external_fs_promises_default = /*#__PURE__*/__rspack_context.n(__rspack_external_fs.promises);// ./index.js
+var external_fs_promises_default = /*#__PURE__*/__rspack_compat_get_default_export(__rspack_external_fs.promises);// ./index.js
 
 
 it('should support array-type module external with property access', async () => {
@@ -20,24 +20,24 @@ export {};
 ```mjs title=runtime.mjs
 // The require scope
 var __rspack_require = {};
-var __rspack_context = {};
+export { __rspack_require };
 
 // rspack/runtime/compat_get_default_export
 // getDefaultExport function for compatibility with non-ESM modules
-var compatGetDefaultExport = (module) => {
+var __rspack_compat_get_default_export = (module) => {
 	var getter = module && module.__esModule ?
 		() => (module['default']) :
 		() => (module);
-	definePropertyGetters(getter, { a: getter });
+	__rspack_define_property_getters(getter, { a: getter });
 	return getter;
 };
 ;
-__rspack_context.n = compatGetDefaultExport;
+export { __rspack_compat_get_default_export };
 // rspack/runtime/define_property_getters
-var definePropertyGetters = (exports, getters, values) => {
+var __rspack_define_property_getters = (exports, getters, values) => {
 	var define = (defs, kind) => {
 		for(var key in defs) {
-			if(hasOwnProperty(defs, key) && !hasOwnProperty(exports, key)) {
+			if(__rspack_has_own_property(defs, key) && !__rspack_has_own_property(exports, key)) {
 				Object.defineProperty(exports, key, { enumerable: true, [kind]: defs[key] });
 			}
 		}
@@ -46,8 +46,7 @@ var definePropertyGetters = (exports, getters, values) => {
 	define(values, "value");
 };;
 // rspack/runtime/has_own_property
-var hasOwnProperty = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
+var __rspack_has_own_property = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
 
-export { __rspack_context };
 
 ```

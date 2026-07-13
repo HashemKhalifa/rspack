@@ -1,9 +1,9 @@
 ```mjs title=main.mjs
-import { __rspack_context } from "./runtime.mjs";
+import { __rspack_require, __rspack_define_property_getters, __rspack_make_namespace_object } from "./runtime.mjs";
 // NAMESPACE OBJECT: ./index.js
 var index_namespaceObject = {};
-__rspack_context.N(index_namespaceObject);
-__rspack_context.d(index_namespaceObject, { 
+__rspack_make_namespace_object(index_namespaceObject);
+__rspack_define_property_getters(index_namespaceObject, {
   foo: () => (foo),
   ns: () => (index_namespaceObject) });
 
@@ -26,13 +26,13 @@ export { foo, index_namespaceObject as ns };
 ```mjs title=runtime.mjs
 // The require scope
 var __rspack_require = {};
-var __rspack_context = {};
+export { __rspack_require };
 
 // rspack/runtime/define_property_getters
-var definePropertyGetters = (exports, getters, values) => {
+var __rspack_define_property_getters = (exports, getters, values) => {
 	var define = (defs, kind) => {
 		for(var key in defs) {
-			if(hasOwnProperty(defs, key) && !hasOwnProperty(exports, key)) {
+			if(__rspack_has_own_property(defs, key) && !__rspack_has_own_property(exports, key)) {
 				Object.defineProperty(exports, key, { enumerable: true, [kind]: defs[key] });
 			}
 		}
@@ -40,19 +40,18 @@ var definePropertyGetters = (exports, getters, values) => {
 	define(getters, "get");
 	define(values, "value");
 };;
-__rspack_context.d = definePropertyGetters;
+export { __rspack_define_property_getters };
 // rspack/runtime/has_own_property
-var hasOwnProperty = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
+var __rspack_has_own_property = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
 // rspack/runtime/make_namespace_object
 // define __esModule on exports
-var makeNamespaceObject = (exports) => {
+var __rspack_make_namespace_object = (exports) => {
 	if(typeof Symbol !== 'undefined' && Symbol.toStringTag) {
 		Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 	}
 	Object.defineProperty(exports, '__esModule', { value: true });
 };;
-__rspack_context.N = makeNamespaceObject;
+export { __rspack_make_namespace_object };
 
-export { __rspack_context };
 
 ```

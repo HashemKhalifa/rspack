@@ -3,7 +3,7 @@ import { __webpack_require__ } from "./runtime.mjs";
 // NAMESPACE OBJECT: ./bar.js
 var bar_namespaceObject = {};
 __webpack_require__.r(bar_namespaceObject);
-__webpack_require__.d(bar_namespaceObject, { 
+__webpack_require__.d(bar_namespaceObject, {
   foo: () => ((/* inlined export .foo */123)) });
 
 

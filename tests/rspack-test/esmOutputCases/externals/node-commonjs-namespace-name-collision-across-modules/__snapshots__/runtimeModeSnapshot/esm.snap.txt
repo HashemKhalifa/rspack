@@ -1,6 +1,5 @@
 ```mjs title=main.mjs
-import { __rspack_context } from "./runtime.mjs";
-
+import { __rspack_require, __rspack_create_fake_namespace_object } from "./runtime.mjs";
 import { createRequire as __rspack_createRequire } from "node:module";
 const __rspack_createRequire_require = __rspack_createRequire(import.meta.url);
 // fs
@@ -25,7 +24,7 @@ const joinFn = Reflect.get(external_path_namespaceObject, "join");
 
 it("should deconflict concatenated namespace imports that match generated node-commonjs names", async () => {
   const mod = await import(/* webpackIgnore: true */ "./main.mjs");
-  const { createRequire } = await import("node:module").then(function(module) { return __rspack_context.t(module.createRequire(import.meta.url)("node:module"), 22) });
+  const { createRequire } = await import("node:module").then(function(module) { return __rspack_create_fake_namespace_object(module.createRequire(import.meta.url)("node:module"), 22) });
   const require = createRequire('<ROOT>/tests/rspack-test/esmOutputCases/externals/node-commonjs-namespace-name-collision-across-modules/index.js');
   const fs = require("fs");
   const path = require("path");
@@ -46,7 +45,7 @@ export { external_path_namespaceObject as pathNs, joinFn, readFile, readFileSync
 ```mjs title=runtime.mjs
 // The require scope
 var __rspack_require = {};
-var __rspack_context = {};
+export { __rspack_require };
 
 // rspack/runtime/create_fake_namespace_object
 var getProto = Object.getPrototypeOf ? (obj) => (Object.getPrototypeOf(obj)) : (obj) => (obj.__proto__);
@@ -57,7 +56,7 @@ var leafPrototypes;
 // mode & 4: return value when already ns object
 // mode & 16: return value when it's Promise-like
 // mode & 8|1: behave like require
-var createFakeNamespaceObject = function(value, mode) {
+var __rspack_create_fake_namespace_object = function(value, mode) {
 	if(mode & 1) value = (typeof this === "function" ? this : this.r)(value);
 	if(mode & 8) return value;
 	if(typeof value === 'object' && value) {
@@ -65,22 +64,22 @@ var createFakeNamespaceObject = function(value, mode) {
 		if((mode & 16) && typeof value.then === 'function') return value;
 	}
 	var ns = Object.create(null);
-  makeNamespaceObject(ns);
+  __rspack_make_namespace_object(ns);
 	var def = {};
 	leafPrototypes = leafPrototypes || [null, getProto({}), getProto([]), getProto(getProto)];
 	for(var current = mode & 2 && value; (typeof current == 'object' || typeof current == 'function') && !~leafPrototypes.indexOf(current); current = getProto(current)) {
 		Object.getOwnPropertyNames(current).forEach((key) => { def[key] = () => (value[key]) });
 	}
 	def['default'] = () => (value);
-	definePropertyGetters(ns, def);
+	__rspack_define_property_getters(ns, def);
 	return ns;
 };;
-__rspack_context.t = createFakeNamespaceObject;
+export { __rspack_create_fake_namespace_object };
 // rspack/runtime/define_property_getters
-var definePropertyGetters = (exports, getters, values) => {
+var __rspack_define_property_getters = (exports, getters, values) => {
 	var define = (defs, kind) => {
 		for(var key in defs) {
-			if(hasOwnProperty(defs, key) && !hasOwnProperty(exports, key)) {
+			if(__rspack_has_own_property(defs, key) && !__rspack_has_own_property(exports, key)) {
 				Object.defineProperty(exports, key, { enumerable: true, [kind]: defs[key] });
 			}
 		}
@@ -89,16 +88,15 @@ var definePropertyGetters = (exports, getters, values) => {
 	define(values, "value");
 };;
 // rspack/runtime/has_own_property
-var hasOwnProperty = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
+var __rspack_has_own_property = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
 // rspack/runtime/make_namespace_object
 // define __esModule on exports
-var makeNamespaceObject = (exports) => {
+var __rspack_make_namespace_object = (exports) => {
 	if(typeof Symbol !== 'undefined' && Symbol.toStringTag) {
 		Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 	}
 	Object.defineProperty(exports, '__esModule', { value: true });
 };;
 
-export { __rspack_context };
 
 ```

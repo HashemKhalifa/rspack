@@ -1,13 +1,12 @@
 ```mjs title=main.mjs
-import { __rspack_context } from "./runtime.mjs";
-
-__rspack_context.m.add({
+import { __rspack_require, __rspack_module_factories, __rspack_node_module_decorator } from "./runtime.mjs";
+__rspack_module_factories.add({
 "./foo.cjs"
 /*!*****************!*\
   !*** ./foo.cjs ***!
   \*****************/
-(module, __unused_rspack_exports, __rspack_context) {
-/* module decorator */ module = __rspack_context.nmd(module);
+(module) {
+/* module decorator */ module = __rspack_node_module_decorator(module);
 function defExports(m) {
   m.exports = 42
 }
@@ -28,7 +27,7 @@ it('should have correct interop for cjs', async () => {
   const { value } = await import(/*webpackIgnore: true*/ './main.mjs')
   expect(value).toBe(42)
 })
-const foo = __rspack_context.r("./foo.cjs");
+const foo = __rspack_require("./foo.cjs");
 
 export { foo as value };
 
@@ -51,28 +50,26 @@ var module = (__rspack_module_cache[moduleId] = {
 exports: {}
 });
 // Execute the module function
-__rspack_modules[moduleId](module, module.exports, __rspack_context);
+__rspack_modules[moduleId](module, module.exports, __rspack_require);
 
 // Return the exports of the module
 return module.exports;
 }
-var __rspack_context = {};
-__rspack_context.r = __rspack_require;
+export { __rspack_require };
 // expose the modules object (__rspack_modules)
-__rspack_context.m = __rspack_modules;
+var __rspack_module_factories = __rspack_modules;
+export { __rspack_module_factories };
 
-var moduleFactories=__rspack_modules;
 // rspack/runtime/esm_register_module
-moduleFactories.add = function registerModules(modules) { Object.assign(moduleFactories, modules) }
+__rspack_module_factories.add = function registerModules(modules) { Object.assign(__rspack_module_factories, modules) }
 ;
 // rspack/runtime/node_module_decorator
-var nodeModuleDecorator = (module) => {
+var __rspack_node_module_decorator = (module) => {
   module.paths = [];
   if (!module.children) module.children = [];
   return module;
 };;
-__rspack_context.nmd = nodeModuleDecorator;
+export { __rspack_node_module_decorator };
 
-export { __rspack_context };
 
 ```

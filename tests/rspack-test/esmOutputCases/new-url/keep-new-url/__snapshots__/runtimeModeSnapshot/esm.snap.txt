@@ -3,15 +3,14 @@
 ```
 
 ```mjs title=main.mjs
-import { __rspack_context } from "./runtime.mjs";
-
-__rspack_context.m.add({
+import { __rspack_require, __rspack_public_path, __rspack_module_factories } from "./runtime.mjs";
+__rspack_module_factories.add({
 "./asset.js"
 /*!******************!*\
   !*** ./asset.js ***!
   \******************/
-(module, __unused_rspack_exports, __rspack_context) {
-module.exports = __rspack_context.p + "ef46db3751d8e999.js";
+(module) {
+module.exports = __rspack_public_path + "ef46db3751d8e999.js";
 
 },
 });
@@ -43,24 +42,23 @@ var module = (__rspack_module_cache[moduleId] = {
 exports: {}
 });
 // Execute the module function
-__rspack_modules[moduleId](module, module.exports, __rspack_context);
+__rspack_modules[moduleId](module, module.exports, __rspack_require);
 
 // Return the exports of the module
 return module.exports;
 }
-var __rspack_context = {};
-__rspack_context.r = __rspack_require;
+export { __rspack_require };
 // expose the modules object (__rspack_modules)
-__rspack_context.m = __rspack_modules;
+var __rspack_module_factories = __rspack_modules;
+export { __rspack_module_factories };
 
-var publicPath, moduleFactories=__rspack_modules;
+var __rspack_public_path;
 // rspack/runtime/esm_register_module
-moduleFactories.add = function registerModules(modules) { Object.assign(moduleFactories, modules) }
+__rspack_module_factories.add = function registerModules(modules) { Object.assign(__rspack_module_factories, modules) }
 ;
 // rspack/runtime/public_path
-var publicPath = "";;
-__rspack_context.p = publicPath;
+var __rspack_public_path = "";;
+export { __rspack_public_path };
 
-export { __rspack_context };
 
 ```

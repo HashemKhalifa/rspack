@@ -14,14 +14,20 @@ module.exports = {
 			false,
 		);
 		if (globalThis.__RSPACK_TEST_RUNTIME_MODE_RSPACK) {
-			expect(entry).toContain('import { __rspack_context } from "./runtime.mjs";');
 			expect(entry).toContain(
-				'__rspack_context.t(module.createRequire(import.meta.url)("node:stream"), 22)'
+				'import { __rspack_require, __rspack_create_fake_namespace_object } from "./runtime.mjs";'
 			);
-			expect(runtime).toContain("export { __rspack_context");
-			expect(entry).not.toContain("export { __rspack_context");
-			expect(entry).not.toContain("as __rspack_context");
-			expect(dynamic).toContain('import { __rspack_context } from "./runtime.mjs";');
+			expect(entry).toContain(
+				'__rspack_create_fake_namespace_object(module.createRequire(import.meta.url)("node:stream"), 22)'
+			);
+			expect(runtime).toContain("export { __rspack_require");
+			expect(runtime).toContain("__rspack_create_fake_namespace_object");
+			expect(runtime.match(/var __rspack_module_factories/g)).toHaveLength(1);
+			expect(entry).not.toContain("export { __rspack_require");
+			expect(entry).not.toContain("as __rspack_require");
+			expect(dynamic).toContain(
+				'import { __rspack_require, __rspack_module_factories, __rspack_compat_get_default_export } from "./runtime.mjs";'
+			);
 		} else {
 			expect(entry).toContain(
 				'import { __webpack_require__ } from "./runtime.mjs";'

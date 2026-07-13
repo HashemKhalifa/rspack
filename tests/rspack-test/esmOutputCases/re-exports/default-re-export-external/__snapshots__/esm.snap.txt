@@ -5,7 +5,7 @@ import fs from "fs";
 // NAMESPACE OBJECT: ./file.js
 var file_namespaceObject = {};
 __webpack_require__.r(file_namespaceObject);
-__webpack_require__.d(file_namespaceObject, { 
+__webpack_require__.d(file_namespaceObject, {
   fsDefault: () => (fs),
   value: () => (value) });
 

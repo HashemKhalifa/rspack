@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use bitflags::bitflags;
-use heck::ToLowerCamelCase;
+use heck::{ToLowerCamelCase, ToSnakeCase};
 use rspack_hash::{RspackHash, RspackHasher};
 use rustc_hash::FxHashMap;
 
@@ -597,6 +597,18 @@ impl RuntimeGlobals {
 
   pub fn to_lexical_name(&self) -> Option<&str> {
     RUNTIME_GLOBAL_MAP.3.get(self).map(String::as_str)
+  }
+
+  pub fn to_rspack_export_name(&self) -> Option<String> {
+    self
+      .to_lexical_name()
+      .map(|name| format!("__rspack_{}", name.to_snake_case()))
+  }
+
+  pub fn to_rspack_export_setter_name(&self) -> Option<String> {
+    self
+      .to_lexical_name()
+      .map(|name| format!("__rspack_set_{}", name.to_snake_case()))
   }
 
   pub fn should_initialize_as_object(&self) -> bool {

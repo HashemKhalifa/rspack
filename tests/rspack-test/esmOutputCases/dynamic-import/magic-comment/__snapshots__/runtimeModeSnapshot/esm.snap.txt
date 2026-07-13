@@ -1,5 +1,5 @@
 ```mjs title=main.mjs
-import { __rspack_context } from "./runtime.mjs";
+import { __rspack_require, __rspack_compat_get_default_export } from "./runtime.mjs";
 import {fileURLToPath as __rspack_fileURLToPath} from "node:url";
 import {dirname as __rspack_dirname} from "node:path";
 var __rspack_import_meta_dirname__ = __rspack_dirname(__rspack_fileURLToPath(import.meta.url));
@@ -8,10 +8,10 @@ const __rspack_createRequire_require = __rspack_createRequire(import.meta.url);
 // node:fs
 const external_node_fs_namespaceObject = __rspack_createRequire_require("node:fs");
 
-var external_node_fs_default = /*#__PURE__*/__rspack_context.n(external_node_fs_namespaceObject);// node:path
+var external_node_fs_default = /*#__PURE__*/__rspack_compat_get_default_export(external_node_fs_namespaceObject);// node:path
 const external_node_path_namespaceObject = __rspack_createRequire_require("node:path");
 
-var external_node_path_default = /*#__PURE__*/__rspack_context.n(external_node_path_namespaceObject);// ./index.js
+var external_node_path_default = /*#__PURE__*/__rspack_compat_get_default_export(external_node_path_namespaceObject);// ./index.js
 
 
 
@@ -38,24 +38,24 @@ export {};
 ```mjs title=runtime.mjs
 // The require scope
 var __rspack_require = {};
-var __rspack_context = {};
+export { __rspack_require };
 
 // rspack/runtime/compat_get_default_export
 // getDefaultExport function for compatibility with non-ESM modules
-var compatGetDefaultExport = (module) => {
+var __rspack_compat_get_default_export = (module) => {
 	var getter = module && module.__esModule ?
 		() => (module['default']) :
 		() => (module);
-	definePropertyGetters(getter, { a: getter });
+	__rspack_define_property_getters(getter, { a: getter });
 	return getter;
 };
 ;
-__rspack_context.n = compatGetDefaultExport;
+export { __rspack_compat_get_default_export };
 // rspack/runtime/define_property_getters
-var definePropertyGetters = (exports, getters, values) => {
+var __rspack_define_property_getters = (exports, getters, values) => {
 	var define = (defs, kind) => {
 		for(var key in defs) {
-			if(hasOwnProperty(defs, key) && !hasOwnProperty(exports, key)) {
+			if(__rspack_has_own_property(defs, key) && !__rspack_has_own_property(exports, key)) {
 				Object.defineProperty(exports, key, { enumerable: true, [kind]: defs[key] });
 			}
 		}
@@ -63,37 +63,36 @@ var definePropertyGetters = (exports, getters, values) => {
 	define(getters, "get");
 	define(values, "value");
 };;
-__rspack_context.d = definePropertyGetters;
+export { __rspack_define_property_getters };
 // rspack/runtime/has_own_property
-var hasOwnProperty = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
+var __rspack_has_own_property = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
 // rspack/runtime/make_namespace_object
 // define __esModule on exports
-var makeNamespaceObject = (exports) => {
+var __rspack_make_namespace_object = (exports) => {
 	if(typeof Symbol !== 'undefined' && Symbol.toStringTag) {
 		Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 	}
 	Object.defineProperty(exports, '__esModule', { value: true });
 };;
-__rspack_context.N = makeNamespaceObject;
+export { __rspack_make_namespace_object };
 
-export { __rspack_context };
 
 ```
 
 ```mjs title=shared.mjs
-import { __rspack_context } from "./runtime.mjs";
+import { __rspack_require, __rspack_define_property_getters, __rspack_make_namespace_object } from "./runtime.mjs";
 // NAMESPACE OBJECT: ./m1.js
 var m1_namespaceObject = {};
-__rspack_context.N(m1_namespaceObject);
-__rspack_context.d(m1_namespaceObject, { 
+__rspack_make_namespace_object(m1_namespaceObject);
+__rspack_define_property_getters(m1_namespaceObject, {
   "default": () => (m1),
   value: () => (value) });
 
 
 // NAMESPACE OBJECT: ./m2.js
 var m2_namespaceObject = {};
-__rspack_context.N(m2_namespaceObject);
-__rspack_context.d(m2_namespaceObject, { 
+__rspack_make_namespace_object(m2_namespaceObject);
+__rspack_define_property_getters(m2_namespaceObject, {
   "default": () => (m2),
   value: () => (m2_value) });
 

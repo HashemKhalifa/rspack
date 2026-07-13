@@ -1,7 +1,6 @@
 ```mjs title=main.mjs
-import { __rspack_context } from "./runtime.mjs";
-
-__rspack_context.m.add({
+import { __rspack_require, __rspack_module_factories, __rspack_create_fake_namespace_object } from "./runtime.mjs";
+__rspack_module_factories.add({
 "./foo.js"
 /*!****************!*\
   !*** ./foo.js ***!
@@ -13,8 +12,8 @@ exports.foo = 123;
 },
 });
 // ./index.js
-const foo = __rspack_context.r("./foo.js");
-var foo_namespace = /*#__PURE__*/__rspack_context.t(foo, 2);
+const foo = __rspack_require("./foo.js");
+var foo_namespace = /*#__PURE__*/__rspack_create_fake_namespace_object(foo, 2);
 
 
 
@@ -46,17 +45,16 @@ var module = (__rspack_module_cache[moduleId] = {
 exports: {}
 });
 // Execute the module function
-__rspack_modules[moduleId](module, module.exports, __rspack_context);
+__rspack_modules[moduleId](module, module.exports, __rspack_require);
 
 // Return the exports of the module
 return module.exports;
 }
-var __rspack_context = {};
-__rspack_context.r = __rspack_require;
+export { __rspack_require };
 // expose the modules object (__rspack_modules)
-__rspack_context.m = __rspack_modules;
+var __rspack_module_factories = __rspack_modules;
+export { __rspack_module_factories };
 
-var moduleFactories=__rspack_modules;
 // rspack/runtime/create_fake_namespace_object
 var getProto = Object.getPrototypeOf ? (obj) => (Object.getPrototypeOf(obj)) : (obj) => (obj.__proto__);
 var leafPrototypes;
@@ -66,7 +64,7 @@ var leafPrototypes;
 // mode & 4: return value when already ns object
 // mode & 16: return value when it's Promise-like
 // mode & 8|1: behave like require
-var createFakeNamespaceObject = function(value, mode) {
+var __rspack_create_fake_namespace_object = function(value, mode) {
 	if(mode & 1) value = (typeof this === "function" ? this : this.r)(value);
 	if(mode & 8) return value;
 	if(typeof value === 'object' && value) {
@@ -74,22 +72,22 @@ var createFakeNamespaceObject = function(value, mode) {
 		if((mode & 16) && typeof value.then === 'function') return value;
 	}
 	var ns = Object.create(null);
-  makeNamespaceObject(ns);
+  __rspack_make_namespace_object(ns);
 	var def = {};
 	leafPrototypes = leafPrototypes || [null, getProto({}), getProto([]), getProto(getProto)];
 	for(var current = mode & 2 && value; (typeof current == 'object' || typeof current == 'function') && !~leafPrototypes.indexOf(current); current = getProto(current)) {
 		Object.getOwnPropertyNames(current).forEach((key) => { def[key] = () => (value[key]) });
 	}
 	def['default'] = () => (value);
-	definePropertyGetters(ns, def);
+	__rspack_define_property_getters(ns, def);
 	return ns;
 };;
-__rspack_context.t = createFakeNamespaceObject;
+export { __rspack_create_fake_namespace_object };
 // rspack/runtime/define_property_getters
-var definePropertyGetters = (exports, getters, values) => {
+var __rspack_define_property_getters = (exports, getters, values) => {
 	var define = (defs, kind) => {
 		for(var key in defs) {
-			if(hasOwnProperty(defs, key) && !hasOwnProperty(exports, key)) {
+			if(__rspack_has_own_property(defs, key) && !__rspack_has_own_property(exports, key)) {
 				Object.defineProperty(exports, key, { enumerable: true, [kind]: defs[key] });
 			}
 		}
@@ -98,19 +96,18 @@ var definePropertyGetters = (exports, getters, values) => {
 	define(values, "value");
 };;
 // rspack/runtime/esm_register_module
-moduleFactories.add = function registerModules(modules) { Object.assign(moduleFactories, modules) }
+__rspack_module_factories.add = function registerModules(modules) { Object.assign(__rspack_module_factories, modules) }
 ;
 // rspack/runtime/has_own_property
-var hasOwnProperty = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
+var __rspack_has_own_property = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
 // rspack/runtime/make_namespace_object
 // define __esModule on exports
-var makeNamespaceObject = (exports) => {
+var __rspack_make_namespace_object = (exports) => {
 	if(typeof Symbol !== 'undefined' && Symbol.toStringTag) {
 		Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 	}
 	Object.defineProperty(exports, '__esModule', { value: true });
 };;
 
-export { __rspack_context };
 
 ```

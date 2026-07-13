@@ -12,10 +12,10 @@ use rspack_core::{
   ConditionalInitFragment, DependencyType, ExportInfo, ExportMode, ExportProvided,
   ExportsInfoArtifact, ExportsType, FindTargetResult, ImportSpec, InitFragmentKey, ModuleGraph,
   ModuleGraphCacheArtifact, ModuleIdentifier, ModuleInfo, NAMESPACE_OBJECT_EXPORT, RuntimeGlobals,
-  SideEffectsStateArtifact, SourceType, URLStaticMode, UsageState, UsedName, UsedNameItem,
-  collect_ident, escape_name_atom_ref, find_new_name, find_target, get_cached_readable_identifier,
-  get_module_directives, get_module_hashbang, property_access, property_name,
-  reserved_names::RESERVED_NAMES_ATOM_SET, rspack_sources::ReplaceSource,
+  RuntimeTemplateRenderMode, SideEffectsStateArtifact, SourceType, URLStaticMode, UsageState,
+  UsedName, UsedNameItem, collect_ident, escape_name_atom_ref, find_new_name, find_target,
+  get_cached_readable_identifier, get_module_directives, get_module_hashbang, property_access,
+  property_name, reserved_names::RESERVED_NAMES_ATOM_SET, rspack_sources::ReplaceSource,
   split_readable_identifier, to_normal_comment,
 };
 use rspack_error::{Diagnostic, Error, Result};
@@ -856,7 +856,7 @@ Object.keys({}).forEach(function(key) {{
           };
           let define_getters = if !ns_obj.is_empty() {
             format!(
-              "{}({}, {{ {} }});\n",
+              "{}({}, {{{} }});\n",
               runtime_template.render_runtime_globals(&RuntimeGlobals::DEFINE_PROPERTY_GETTERS),
               name,
               ns_obj.join(",")
@@ -2567,6 +2567,9 @@ var {} = {{}};
         let info = &concate_modules_map[m];
         let runtime_requirements = info.get_runtime_requirements();
         if !runtime_requirements.is_empty() && runtime_chunk != *chunk {
+          if compilation.runtime_template.render_mode() == RuntimeTemplateRenderMode::RspackExport {
+            continue;
+          }
           let runtime_template = compilation.runtime_template.create_chunk_code_template();
           let require_symbol: Atom = runtime_template.render_runtime_argument().into();
           if !runtime_chunks_exporting_require_via_runtime_module.contains(&runtime_chunk) {

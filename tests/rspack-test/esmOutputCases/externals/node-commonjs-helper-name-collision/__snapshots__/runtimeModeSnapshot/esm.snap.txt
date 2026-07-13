@@ -1,12 +1,11 @@
 ```mjs title=main.mjs
-import { __rspack_context } from "./runtime.mjs";
-
+import { __rspack_require, __rspack_module_factories } from "./runtime.mjs";
 import {fileURLToPath as __rspack_fileURLToPath} from "node:url";
 import {dirname as __rspack_dirname} from "node:path";
 var __rspack_import_meta_dirname__ = __rspack_dirname(__rspack_fileURLToPath(import.meta.url));
 import { createRequire as __rspack_createRequire } from "node:module";
 const __rspack_createRequire_require = __rspack_createRequire(import.meta.url);
-__rspack_context.m.add({
+__rspack_module_factories.add({
 "fs"
 /*!*********************!*\
   !*** external "fs" ***!
@@ -27,7 +26,7 @@ const external_fs_namespaceObject = index_rspack_createRequire_require("fs");
 
 const sourceCreateRequireRequire = index_rspack_createRequire_require;
 const sourceReadFile = external_fs_namespaceObject.readFile;
-const sourceRequireReadFile = (__rspack_context.r(/*! fs */ "fs")/* .readFile */.readFile);
+const sourceRequireReadFile = (__rspack_require(/*! fs */ "fs")/* .readFile */.readFile);
 
 it("should deconflict source bindings that already use the node-commonjs helper names", async () => {
   const mod = await import(/* webpackIgnore: true */ "./main.mjs");
@@ -69,21 +68,19 @@ var module = (__rspack_module_cache[moduleId] = {
 exports: {}
 });
 // Execute the module function
-__rspack_modules[moduleId](module, module.exports, __rspack_context);
+__rspack_modules[moduleId](module, module.exports, __rspack_require);
 
 // Return the exports of the module
 return module.exports;
 }
-var __rspack_context = {};
-__rspack_context.r = __rspack_require;
+export { __rspack_require };
 // expose the modules object (__rspack_modules)
-__rspack_context.m = __rspack_modules;
+var __rspack_module_factories = __rspack_modules;
+export { __rspack_module_factories };
 
-var moduleFactories=__rspack_modules;
 // rspack/runtime/esm_register_module
-moduleFactories.add = function registerModules(modules) { Object.assign(moduleFactories, modules) }
+__rspack_module_factories.add = function registerModules(modules) { Object.assign(__rspack_module_factories, modules) }
 ;
 
-export { __rspack_context };
 
 ```

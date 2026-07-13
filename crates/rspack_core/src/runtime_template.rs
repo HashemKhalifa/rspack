@@ -61,6 +61,13 @@ static RSPACK_LEXICAL_RUNTIME_GLOBALS: LazyLock<Arc<RuntimeGlobalsRenderMap>> =
     ))
   });
 
+static RSPACK_EXPORT_RUNTIME_GLOBALS: LazyLock<Arc<RuntimeGlobalsRenderMap>> =
+  LazyLock::new(|| {
+    Arc::new(runtime_globals_to_render_map(
+      RuntimeGlobalsRenderMode::RspackExport,
+    ))
+  });
+
 /// Controls how a single runtime global is rendered into its final JavaScript identifier.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub enum RuntimeGlobalsRenderMode {
@@ -71,6 +78,9 @@ pub enum RuntimeGlobalsRenderMode {
   RspackContext,
   /// Renders runtime globals as lexical variables such as `definePropertyGetters`.
   RspackLexical,
+  /// Renders runtime globals as exported lexical variables such as
+  /// `__rspack_define_property_getters`.
+  RspackExport,
 }
 
 impl RuntimeGlobalsRenderMode {
@@ -82,7 +92,7 @@ impl RuntimeGlobalsRenderMode {
   fn render_runtime_variable(self, runtime_variable: &RuntimeVariable) -> String {
     match self {
       Self::Webpack => runtime_variable_name(runtime_variable).to_string(),
-      Self::RspackContext | Self::RspackLexical => {
+      Self::RspackContext | Self::RspackLexical | Self::RspackExport => {
         rspack_runtime_variable_name(runtime_variable).to_string()
       }
     }
@@ -97,9 +107,35 @@ pub enum RuntimeTemplateRenderMode {
   Webpack,
   /// Uses context references in modules and chunks, and lexical bindings in runtime modules.
   Rspack,
+  /// Uses exported lexical bindings in modules, runtime modules, and chunks.
+  RspackExport,
 }
 
 impl RuntimeTemplateRenderMode {
+  fn from_options(compiler_options: &CompilerOptions) -> Self {
+    match compiler_options.experiments.runtime_mode {
+      RuntimeMode::Webpack => Self::Webpack,
+      RuntimeMode::Rspack
+        if compiler_options.output.module
+          && compiler_options
+            .output
+            .enabled_library_types
+            .as_ref()
+            .is_some_and(|types| types.iter().any(|ty| ty == "modern-module")) =>
+      {
+        Self::RspackExport
+      }
+      RuntimeMode::Rspack => Self::Rspack,
+    }
+  }
+
+  fn for_module_execution(compiler_options: &CompilerOptions) -> Self {
+    match compiler_options.experiments.runtime_mode {
+      RuntimeMode::Webpack => Self::Webpack,
+      RuntimeMode::Rspack => Self::Rspack,
+    }
+  }
+
   /// Returns whether all runtime globals use webpack-compatible identifiers.
   pub fn is_legacy(self) -> bool {
     matches!(self, Self::Webpack)
@@ -110,6 +146,7 @@ impl RuntimeTemplateRenderMode {
     match self {
       Self::Webpack => RuntimeGlobalsRenderMode::Webpack,
       Self::Rspack => RuntimeGlobalsRenderMode::RspackContext,
+      Self::RspackExport => RuntimeGlobalsRenderMode::RspackExport,
     }
   }
 
@@ -118,6 +155,7 @@ impl RuntimeTemplateRenderMode {
     match self {
       Self::Webpack => RuntimeGlobalsRenderMode::Webpack,
       Self::Rspack => RuntimeGlobalsRenderMode::RspackLexical,
+      Self::RspackExport => RuntimeGlobalsRenderMode::RspackExport,
     }
   }
 
@@ -126,15 +164,7 @@ impl RuntimeTemplateRenderMode {
     match self {
       Self::Webpack => RuntimeGlobalsRenderMode::Webpack,
       Self::Rspack => RuntimeGlobalsRenderMode::RspackContext,
-    }
-  }
-}
-
-impl From<RuntimeMode> for RuntimeTemplateRenderMode {
-  fn from(value: RuntimeMode) -> Self {
-    match value {
-      RuntimeMode::Webpack => Self::Webpack,
-      RuntimeMode::Rspack => Self::Rspack,
+      Self::RspackExport => RuntimeGlobalsRenderMode::RspackExport,
     }
   }
 }
@@ -178,7 +208,19 @@ impl Debug for RuntimeTemplate {
 
 impl RuntimeTemplate {
   pub fn new(compiler_options: Arc<CompilerOptions>) -> Self {
-    let render_mode = RuntimeTemplateRenderMode::from(compiler_options.experiments.runtime_mode);
+    let render_mode = RuntimeTemplateRenderMode::from_options(&compiler_options);
+    Self::with_render_mode(compiler_options, render_mode)
+  }
+
+  pub(crate) fn for_module_execution(compiler_options: Arc<CompilerOptions>) -> Self {
+    let render_mode = RuntimeTemplateRenderMode::for_module_execution(&compiler_options);
+    Self::with_render_mode(compiler_options, render_mode)
+  }
+
+  fn with_render_mode(
+    compiler_options: Arc<CompilerOptions>,
+    render_mode: RuntimeTemplateRenderMode,
+  ) -> Self {
     let runtime_globals = get_runtime_globals_render_map(render_mode.runtime_module_render_mode());
     let mut dojang = Dojang::new();
 
@@ -338,6 +380,7 @@ fn get_runtime_globals_render_map(
     RuntimeGlobalsRenderMode::Webpack => WEBPACK_RUNTIME_GLOBALS.clone(),
     RuntimeGlobalsRenderMode::RspackContext => RSPACK_CONTEXT_RUNTIME_GLOBALS.clone(),
     RuntimeGlobalsRenderMode::RspackLexical => RSPACK_LEXICAL_RUNTIME_GLOBALS.clone(),
+    RuntimeGlobalsRenderMode::RspackExport => RSPACK_EXPORT_RUNTIME_GLOBALS.clone(),
   }
 }
 
@@ -388,6 +431,23 @@ fn runtime_globals_to_render_map(render_mode: RuntimeGlobalsRenderMode) -> Runti
             || runtime_globals_to_string(&runtime_globals),
             str::to_string,
           )
+        } else {
+          runtime_globals_to_string(&runtime_globals)
+        }
+      }
+      RuntimeGlobalsRenderMode::RspackExport => {
+        if runtime_globals == RuntimeGlobals::REQUIRE_SCOPE
+          || runtime_globals == RuntimeGlobals::REQUIRE
+        {
+          rspack_runtime_variable_name(&RuntimeVariable::Require).to_string()
+        } else if runtime_globals == RuntimeGlobals::EXPORTS {
+          rspack_runtime_variable_name(&RuntimeVariable::Exports).to_string()
+        } else if runtime_globals == RuntimeGlobals::MODULE {
+          rspack_runtime_variable_name(&RuntimeVariable::Module).to_string()
+        } else if runtime_globals.renderable_require_scope() == runtime_globals {
+          runtime_globals
+            .to_rspack_export_name()
+            .unwrap_or_else(|| runtime_globals_to_string(&runtime_globals))
         } else {
           runtime_globals_to_string(&runtime_globals)
         }
@@ -565,10 +625,12 @@ fn dojang_define(
 ) -> Operand {
   // `define(...)` marks a runtime global assignment; the EJS extractor records it in `define`.
   match render_mode {
-    RuntimeGlobalsRenderMode::RspackLexical => Operand::Value(Value::from(format!(
-      "var {}",
-      to_cow(&runtime_global, runtime_globals)
-    ))),
+    RuntimeGlobalsRenderMode::RspackLexical | RuntimeGlobalsRenderMode::RspackExport => {
+      Operand::Value(Value::from(format!(
+        "var {}",
+        to_cow(&runtime_global, runtime_globals)
+      )))
+    }
     RuntimeGlobalsRenderMode::Webpack | RuntimeGlobalsRenderMode::RspackContext => Operand::Value(
       Value::from(to_cow(&runtime_global, runtime_globals).into_owned()),
     ),
@@ -768,6 +830,12 @@ impl ModuleCodeTemplate {
 
   pub fn render_runtime_globals_without_adding(&self, runtime_globals: &RuntimeGlobals) -> String {
     self.runtime_globals.render(runtime_globals)
+  }
+
+  pub fn render_runtime_global_setter(&self, runtime_global: &RuntimeGlobals) -> Option<String> {
+    (self.runtime_globals_render_mode == RuntimeGlobalsRenderMode::RspackExport)
+      .then(|| runtime_global.to_rspack_export_setter_name())
+      .flatten()
   }
 
   pub fn define_es_module_flag_statement(&mut self, exports_argument: ExportsArgument) -> String {
@@ -1732,7 +1800,9 @@ impl RuntimeCodeTemplate {
   pub fn render_runtime_global_definition(&self, runtime_globals: &RuntimeGlobals) -> String {
     let runtime_global = self.runtime_globals.render(runtime_globals);
     match self.render_mode {
-      RuntimeGlobalsRenderMode::RspackLexical => format!("var {runtime_global}"),
+      RuntimeGlobalsRenderMode::RspackLexical | RuntimeGlobalsRenderMode::RspackExport => {
+        format!("var {runtime_global}")
+      }
       RuntimeGlobalsRenderMode::Webpack | RuntimeGlobalsRenderMode::RspackContext => runtime_global,
     }
   }
@@ -1751,10 +1821,13 @@ impl RuntimeCodeTemplate {
   }
 
   pub fn render_runtime_argument(&self) -> String {
-    if self.render_mode.is_legacy() {
-      self.render_runtime_globals(&RuntimeGlobals::REQUIRE)
-    } else {
-      self.render_runtime_variable(&RuntimeVariable::Context)
+    match self.render_mode {
+      RuntimeGlobalsRenderMode::Webpack | RuntimeGlobalsRenderMode::RspackExport => {
+        self.render_runtime_globals(&RuntimeGlobals::REQUIRE)
+      }
+      RuntimeGlobalsRenderMode::RspackContext | RuntimeGlobalsRenderMode::RspackLexical => {
+        self.render_runtime_variable(&RuntimeVariable::Context)
+      }
     }
   }
 
