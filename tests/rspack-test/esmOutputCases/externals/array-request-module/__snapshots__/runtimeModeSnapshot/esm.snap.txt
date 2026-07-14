@@ -1,11 +1,11 @@
 ```mjs title=main.mjs
-import { __rspack_require, __rspack_compat_get_default_export } from "./runtime.mjs";
+import { rspackRequire, compatGetDefaultExport } from "./runtime.mjs";
 import * as __rspack_external_fs from "fs";
 
 // fs-promises
 
 
-var external_fs_promises_default = /*#__PURE__*/__rspack_compat_get_default_export(__rspack_external_fs.promises);// ./index.js
+var external_fs_promises_default = /*#__PURE__*/compatGetDefaultExport(__rspack_external_fs.promises);// ./index.js
 
 
 it('should support array-type module external with property access', async () => {
@@ -19,25 +19,25 @@ export {};
 
 ```mjs title=runtime.mjs
 // The require scope
-var __rspack_require = {};
-export { __rspack_require };
+var rspackRequire = {};
+export { rspackRequire };
 
 // rspack/runtime/compat_get_default_export
 // getDefaultExport function for compatibility with non-ESM modules
-var __rspack_compat_get_default_export = (module) => {
+var compatGetDefaultExport = (module) => {
 	var getter = module && module.__esModule ?
 		() => (module['default']) :
 		() => (module);
-	__rspack_define_property_getters(getter, { a: getter });
+	definePropertyGetters(getter, { a: getter });
 	return getter;
 };
 ;
-export { __rspack_compat_get_default_export };
+export { compatGetDefaultExport };
 // rspack/runtime/define_property_getters
-var __rspack_define_property_getters = (exports, getters, values) => {
+var definePropertyGetters = (exports, getters, values) => {
 	var define = (defs, kind) => {
 		for(var key in defs) {
-			if(__rspack_has_own_property(defs, key) && !__rspack_has_own_property(exports, key)) {
+			if(hasOwnProperty(defs, key) && !hasOwnProperty(exports, key)) {
 				Object.defineProperty(exports, key, { enumerable: true, [kind]: defs[key] });
 			}
 		}
@@ -46,7 +46,7 @@ var __rspack_define_property_getters = (exports, getters, values) => {
 	define(values, "value");
 };;
 // rspack/runtime/has_own_property
-var __rspack_has_own_property = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
+var hasOwnProperty = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
 
 
 ```

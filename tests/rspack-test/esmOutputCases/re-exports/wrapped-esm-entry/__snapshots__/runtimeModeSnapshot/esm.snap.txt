@@ -1,19 +1,19 @@
 ```mjs title=main.mjs
-import { __rspack_require, __rspack_module_factories, __rspack_define_property_getters, __rspack_make_namespace_object, __rspack_esm_module_decorator } from "./runtime.mjs";
+import { rspackRequire, moduleFactories, definePropertyGetters, makeNamespaceObject, esmModuleDecorator } from "./runtime.mjs";
 import * as __rspack_external_fs from "fs";
-__rspack_module_factories.add({
+moduleFactories.add({
 "./index.js"
 /*!******************!*\
   !*** ./index.js ***!
   \******************/
-(module, __rspack_exports, __rspack_require) {
-__rspack_make_namespace_object(__rspack_exports);
-/* import */ var fs__rspack_import_0 = __rspack_require(/*! fs */ "fs");
+(module, exports, rspackRequire) {
+makeNamespaceObject(exports);
+/* import */ var fs__rspack_import_0 = rspackRequire(/*! fs */ "fs");
 
 /* reexport */ var __rspack_reexport = {};
 /* reexport */ for( const __rspack_import_key in fs__rspack_import_0) if(["r","named","default","fs","starExports","readFile"].indexOf(__rspack_import_key) < 0) __rspack_reexport[__rspack_import_key] =() => fs__rspack_import_0[__rspack_import_key]
-/* reexport */ __rspack_define_property_getters(__rspack_exports, __rspack_reexport);
-/* module decorator */ module = __rspack_esm_module_decorator(module);
+/* reexport */ definePropertyGetters(exports, __rspack_reexport);
+/* module decorator */ module = esmModuleDecorator(module);
 
 
 
@@ -37,7 +37,7 @@ it('should compile and import success', async () => {
 	expect(readFile).toBeDefined()
 })
 
-__rspack_define_property_getters(__rspack_exports, {
+definePropertyGetters(exports, {
   fs: () => (/* reexport safe */ fs__rspack_import_0["default"]),
   named: () => (/* reexport safe */ (/* inlined export _lib__rspack_import_1 */42)),
   r: () => (/* reexport safe */ fs__rspack_import_0.readFile),
@@ -58,7 +58,7 @@ module.exports = __rspack_external_fs;
 
 },
 });
-const index = __rspack_require("./index.js");
+const index = rspackRequire("./index.js");
 var fs = index.fs;
 var named = index.named;
 var r = index.r;
@@ -72,37 +72,37 @@ export * from "fs";
 
 ```mjs title=runtime.mjs
 
-var __rspack_modules = {};
+var modules = {};
 // The module cache
-var __rspack_module_cache = {};
+var moduleCache = {};
 // The require function
-function __rspack_require(moduleId) {
+function rspackRequire(moduleId) {
 // Check if module is in cache
-var cachedModule = __rspack_module_cache[moduleId];
+var cachedModule = moduleCache[moduleId];
 if (cachedModule !== undefined) {
 return cachedModule.exports;
 }
 // Create a new module (and put it into the cache)
-var module = (__rspack_module_cache[moduleId] = {
+var module = (moduleCache[moduleId] = {
 id: moduleId,
 exports: {}
 });
 // Execute the module function
-__rspack_modules[moduleId](module, module.exports, __rspack_require);
+modules[moduleId](module, module.exports, rspackRequire);
 
 // Return the exports of the module
 return module.exports;
 }
-export { __rspack_require };
-// expose the modules object (__rspack_modules)
-var __rspack_module_factories = __rspack_modules;
-export { __rspack_module_factories };
+export { rspackRequire };
+// expose the modules object (modules)
+var moduleFactories = modules;
+export { moduleFactories };
 
 // rspack/runtime/define_property_getters
-var __rspack_define_property_getters = (exports, getters, values) => {
+var definePropertyGetters = (exports, getters, values) => {
 	var define = (defs, kind) => {
 		for(var key in defs) {
-			if(__rspack_has_own_property(defs, key) && !__rspack_has_own_property(exports, key)) {
+			if(hasOwnProperty(defs, key) && !hasOwnProperty(exports, key)) {
 				Object.defineProperty(exports, key, { enumerable: true, [kind]: defs[key] });
 			}
 		}
@@ -110,9 +110,9 @@ var __rspack_define_property_getters = (exports, getters, values) => {
 	define(getters, "get");
 	define(values, "value");
 };;
-export { __rspack_define_property_getters };
+export { definePropertyGetters };
 // rspack/runtime/esm_module_decorator
-var __rspack_esm_module_decorator = (module) => {
+var esmModuleDecorator = (module) => {
   module = Object.create(module);
   if (!module.children) module.children = [];
   Object.defineProperty(module, 'exports', {
@@ -123,21 +123,21 @@ var __rspack_esm_module_decorator = (module) => {
   });
   return module;
 };;
-export { __rspack_esm_module_decorator };
+export { esmModuleDecorator };
 // rspack/runtime/esm_register_module
-__rspack_module_factories.add = function registerModules(modules) { Object.assign(__rspack_module_factories, modules) }
+moduleFactories.add = function registerModules(modules) { Object.assign(moduleFactories, modules) }
 ;
 // rspack/runtime/has_own_property
-var __rspack_has_own_property = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
+var hasOwnProperty = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
 // rspack/runtime/make_namespace_object
 // define __esModule on exports
-var __rspack_make_namespace_object = (exports) => {
+var makeNamespaceObject = (exports) => {
 	if(typeof Symbol !== 'undefined' && Symbol.toStringTag) {
 		Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 	}
 	Object.defineProperty(exports, '__esModule', { value: true });
 };;
-export { __rspack_make_namespace_object };
+export { makeNamespaceObject };
 
 
 ```

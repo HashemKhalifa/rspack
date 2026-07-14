@@ -1,6 +1,6 @@
 ```mjs title=main.mjs
-import { __rspack_require, __rspack_module_factories, __rspack_define_property_getters, __rspack_make_namespace_object } from "./runtime.mjs";
-__rspack_module_factories.add({
+import { rspackRequire, moduleFactories, definePropertyGetters, makeNamespaceObject } from "./runtime.mjs";
+moduleFactories.add({
 "./bar.js"
 /*!****************!*\
   !*** ./bar.js ***!
@@ -14,13 +14,13 @@ exports.bar = 2
 /*!****************!*\
   !*** ./foo.js ***!
   \****************/
-(__unused_rspack_module, __rspack_exports, __rspack_require) {
-__rspack_make_namespace_object(__rspack_exports);
-/* import */ var _bar__rspack_import_0 = __rspack_require(/*! ./bar */ "./bar.js");
+(__unused_rspack_module, exports, rspackRequire) {
+makeNamespaceObject(exports);
+/* import */ var _bar__rspack_import_0 = rspackRequire(/*! ./bar */ "./bar.js");
 const foo = 1
 
 
-__rspack_define_property_getters(__rspack_exports, {
+definePropertyGetters(exports, {
   bar: () => (/* reexport safe */ _bar__rspack_import_0.bar)
 }, {
   foo: foo
@@ -32,8 +32,8 @@ __rspack_define_property_getters(__rspack_exports, {
 /*!******************!*\
   !*** ./index.js ***!
   \******************/
-(module, __unused_rspack_exports, __rspack_require) {
-module.exports = __rspack_require(/*! ./foo */ "./foo.js")
+(module, __unused_rspack_exports, rspackRequire) {
+module.exports = rspackRequire(/*! ./foo */ "./foo.js")
 
 it('should have correct output for entry re-exports', async () => {
 	const { foo, bar } = await import(/* webpackIgnore: true */ './main.mjs');
@@ -46,7 +46,7 @@ it('should have correct output for entry re-exports', async () => {
 
 },
 });
-const index = __rspack_require("./index.js");
+const index = rspackRequire("./index.js");
 var bar = index.bar;
 var foo = index.foo;
 
@@ -56,36 +56,36 @@ export { bar, foo };
 
 ```mjs title=runtime.mjs
 
-var __rspack_modules = {};
+var modules = {};
 // The module cache
-var __rspack_module_cache = {};
+var moduleCache = {};
 // The require function
-function __rspack_require(moduleId) {
+function rspackRequire(moduleId) {
 // Check if module is in cache
-var cachedModule = __rspack_module_cache[moduleId];
+var cachedModule = moduleCache[moduleId];
 if (cachedModule !== undefined) {
 return cachedModule.exports;
 }
 // Create a new module (and put it into the cache)
-var module = (__rspack_module_cache[moduleId] = {
+var module = (moduleCache[moduleId] = {
 exports: {}
 });
 // Execute the module function
-__rspack_modules[moduleId](module, module.exports, __rspack_require);
+modules[moduleId](module, module.exports, rspackRequire);
 
 // Return the exports of the module
 return module.exports;
 }
-export { __rspack_require };
-// expose the modules object (__rspack_modules)
-var __rspack_module_factories = __rspack_modules;
-export { __rspack_module_factories };
+export { rspackRequire };
+// expose the modules object (modules)
+var moduleFactories = modules;
+export { moduleFactories };
 
 // rspack/runtime/define_property_getters
-var __rspack_define_property_getters = (exports, getters, values) => {
+var definePropertyGetters = (exports, getters, values) => {
 	var define = (defs, kind) => {
 		for(var key in defs) {
-			if(__rspack_has_own_property(defs, key) && !__rspack_has_own_property(exports, key)) {
+			if(hasOwnProperty(defs, key) && !hasOwnProperty(exports, key)) {
 				Object.defineProperty(exports, key, { enumerable: true, [kind]: defs[key] });
 			}
 		}
@@ -93,21 +93,21 @@ var __rspack_define_property_getters = (exports, getters, values) => {
 	define(getters, "get");
 	define(values, "value");
 };;
-export { __rspack_define_property_getters };
+export { definePropertyGetters };
 // rspack/runtime/esm_register_module
-__rspack_module_factories.add = function registerModules(modules) { Object.assign(__rspack_module_factories, modules) }
+moduleFactories.add = function registerModules(modules) { Object.assign(moduleFactories, modules) }
 ;
 // rspack/runtime/has_own_property
-var __rspack_has_own_property = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
+var hasOwnProperty = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
 // rspack/runtime/make_namespace_object
 // define __esModule on exports
-var __rspack_make_namespace_object = (exports) => {
+var makeNamespaceObject = (exports) => {
 	if(typeof Symbol !== 'undefined' && Symbol.toStringTag) {
 		Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 	}
 	Object.defineProperty(exports, '__esModule', { value: true });
 };;
-export { __rspack_make_namespace_object };
+export { makeNamespaceObject };
 
 
 ```

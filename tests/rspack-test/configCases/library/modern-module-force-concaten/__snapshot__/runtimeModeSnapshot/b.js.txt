@@ -1,10 +1,10 @@
-import { __rspack_require, __rspack_module_factories } from "./runtime~0.js";
-__rspack_module_factories.add({
+import { rspackRequire, moduleFactories } from "./runtime~0.js";
+moduleFactories.add({
 917(module) {
 module.exports = 'b'
 
 },
 });
-__rspack_require("917");
+rspackRequire("917");
 
 export {};

@@ -281,13 +281,18 @@ fn render_module_factories_definition(runtime_template: &RuntimeCodeTemplate) ->
 }
 
 fn render_module_cache_definition(runtime_template: &RuntimeCodeTemplate) -> RawStringSource {
+  let module_cache_name = runtime_template.render_runtime_globals(&RuntimeGlobals::MODULE_CACHE);
+  let runtime_module_cache =
+    runtime_template.render_runtime_variable(&RuntimeVariable::ModuleCache);
+  if module_cache_name == runtime_module_cache {
+    return RawStringSource::from_static("");
+  }
   let module_cache =
     runtime_template.render_runtime_global_definition(&RuntimeGlobals::MODULE_CACHE);
   RawStringSource::from(format!(
     r#"// expose the module cache
-{module_cache} = {};
+{module_cache} = {runtime_module_cache};
 "#,
-    runtime_template.render_runtime_variable(&RuntimeVariable::ModuleCache),
   ))
 }
 

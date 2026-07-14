@@ -1,12 +1,12 @@
-import { __rspack_require, __rspack_module_factories, __rspack_compat_get_default_export } from "./runtime~0.js";
-__rspack_module_factories.add({
+import { rspackRequire, moduleFactories, compatGetDefaultExport } from "./runtime~0.js";
+moduleFactories.add({
 100(module) {
 module.exports = 'bar'
 
 },
 });
-const bar = __rspack_require("100");
-var bar_default = /*#__PURE__*/__rspack_compat_get_default_export(bar);
+const bar = rspackRequire("100");
+var bar_default = /*#__PURE__*/compatGetDefaultExport(bar);
 var bar_default_0 = bar_default();
 
 

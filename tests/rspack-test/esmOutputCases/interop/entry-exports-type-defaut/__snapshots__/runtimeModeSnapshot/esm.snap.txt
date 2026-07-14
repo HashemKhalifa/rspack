@@ -5,8 +5,8 @@ export { default, foo } from "./json.mjs";
 ```
 
 ```mjs title=cjsBundle.mjs
-import { __rspack_require, __rspack_module_factories, __rspack_compat_get_default_export } from "./runtime.mjs";
-__rspack_module_factories.add({
+import { rspackRequire, moduleFactories, compatGetDefaultExport } from "./runtime.mjs";
+moduleFactories.add({
 "./cjs.js"
 /*!****************!*\
   !*** ./cjs.js ***!
@@ -16,8 +16,8 @@ exports.value = 42
 
 },
 });
-const cjs = __rspack_require("./cjs.js");
-var cjs_default = /*#__PURE__*/__rspack_compat_get_default_export(cjs);
+const cjs = rspackRequire("./cjs.js");
+var cjs_default = /*#__PURE__*/compatGetDefaultExport(cjs);
 var cjs_default_0 = cjs_default();
 var value = cjs.value;
 
@@ -49,47 +49,47 @@ export {};
 
 ```mjs title=runtime.mjs
 
-var __rspack_modules = {};
+var modules = {};
 // The module cache
-var __rspack_module_cache = {};
+var moduleCache = {};
 // The require function
-function __rspack_require(moduleId) {
+function rspackRequire(moduleId) {
 // Check if module is in cache
-var cachedModule = __rspack_module_cache[moduleId];
+var cachedModule = moduleCache[moduleId];
 if (cachedModule !== undefined) {
 return cachedModule.exports;
 }
 // Create a new module (and put it into the cache)
-var module = (__rspack_module_cache[moduleId] = {
+var module = (moduleCache[moduleId] = {
 exports: {}
 });
 // Execute the module function
-__rspack_modules[moduleId](module, module.exports, __rspack_require);
+modules[moduleId](module, module.exports, rspackRequire);
 
 // Return the exports of the module
 return module.exports;
 }
-export { __rspack_require };
-// expose the modules object (__rspack_modules)
-var __rspack_module_factories = __rspack_modules;
-export { __rspack_module_factories };
+export { rspackRequire };
+// expose the modules object (modules)
+var moduleFactories = modules;
+export { moduleFactories };
 
 // rspack/runtime/compat_get_default_export
 // getDefaultExport function for compatibility with non-ESM modules
-var __rspack_compat_get_default_export = (module) => {
+var compatGetDefaultExport = (module) => {
 	var getter = module && module.__esModule ?
 		() => (module['default']) :
 		() => (module);
-	__rspack_define_property_getters(getter, { a: getter });
+	definePropertyGetters(getter, { a: getter });
 	return getter;
 };
 ;
-export { __rspack_compat_get_default_export };
+export { compatGetDefaultExport };
 // rspack/runtime/define_property_getters
-var __rspack_define_property_getters = (exports, getters, values) => {
+var definePropertyGetters = (exports, getters, values) => {
 	var define = (defs, kind) => {
 		for(var key in defs) {
-			if(__rspack_has_own_property(defs, key) && !__rspack_has_own_property(exports, key)) {
+			if(hasOwnProperty(defs, key) && !hasOwnProperty(exports, key)) {
 				Object.defineProperty(exports, key, { enumerable: true, [kind]: defs[key] });
 			}
 		}
@@ -98,10 +98,10 @@ var __rspack_define_property_getters = (exports, getters, values) => {
 	define(values, "value");
 };;
 // rspack/runtime/esm_register_module
-__rspack_module_factories.add = function registerModules(modules) { Object.assign(__rspack_module_factories, modules) }
+moduleFactories.add = function registerModules(modules) { Object.assign(moduleFactories, modules) }
 ;
 // rspack/runtime/has_own_property
-var __rspack_has_own_property = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
+var hasOwnProperty = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
 
 
 ```

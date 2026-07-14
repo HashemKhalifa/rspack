@@ -1,9 +1,9 @@
 ```mjs title=main.mjs
-import { __rspack_require, __rspack_define_property_getters, __rspack_make_namespace_object } from "./runtime.mjs";
+import { rspackRequire, definePropertyGetters, makeNamespaceObject } from "./runtime.mjs";
 // NAMESPACE OBJECT: ./index.js
 var index_namespaceObject = {};
-__rspack_make_namespace_object(index_namespaceObject);
-__rspack_define_property_getters(index_namespaceObject, { 
+makeNamespaceObject(index_namespaceObject);
+definePropertyGetters(index_namespaceObject, { 
   keys: () => (keys),
   p: () => (p) });
 
@@ -30,14 +30,14 @@ export { keys, p };
 
 ```mjs title=runtime.mjs
 // The require scope
-var __rspack_require = {};
-export { __rspack_require };
+var rspackRequire = {};
+export { rspackRequire };
 
 // rspack/runtime/define_property_getters
-var __rspack_define_property_getters = (exports, getters, values) => {
+var definePropertyGetters = (exports, getters, values) => {
 	var define = (defs, kind) => {
 		for(var key in defs) {
-			if(__rspack_has_own_property(defs, key) && !__rspack_has_own_property(exports, key)) {
+			if(hasOwnProperty(defs, key) && !hasOwnProperty(exports, key)) {
 				Object.defineProperty(exports, key, { enumerable: true, [kind]: defs[key] });
 			}
 		}
@@ -45,18 +45,18 @@ var __rspack_define_property_getters = (exports, getters, values) => {
 	define(getters, "get");
 	define(values, "value");
 };;
-export { __rspack_define_property_getters };
+export { definePropertyGetters };
 // rspack/runtime/has_own_property
-var __rspack_has_own_property = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
+var hasOwnProperty = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
 // rspack/runtime/make_namespace_object
 // define __esModule on exports
-var __rspack_make_namespace_object = (exports) => {
+var makeNamespaceObject = (exports) => {
 	if(typeof Symbol !== 'undefined' && Symbol.toStringTag) {
 		Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 	}
 	Object.defineProperty(exports, '__esModule', { value: true });
 };;
-export { __rspack_make_namespace_object };
+export { makeNamespaceObject };
 
 
 ```

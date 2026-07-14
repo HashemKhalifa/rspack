@@ -18,15 +18,6 @@ pub fn render_lexical_declarations(
   })
 }
 
-pub fn render_rspack_export_declarations(
-  fields: RuntimeGlobals,
-  render_runtime_global: Option<&dyn Fn(RuntimeGlobals) -> Option<String>>,
-) -> String {
-  render_lexical_declarations_with_name(fields, render_runtime_global, &|runtime_global| {
-    runtime_global.to_rspack_export_name()
-  })
-}
-
 fn render_lexical_declarations_with_name(
   fields: RuntimeGlobals,
   render_runtime_global: Option<&dyn Fn(RuntimeGlobals) -> Option<String>>,

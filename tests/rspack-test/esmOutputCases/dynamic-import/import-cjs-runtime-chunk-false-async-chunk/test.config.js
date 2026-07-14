@@ -15,18 +15,18 @@ module.exports = {
 		);
 		if (globalThis.__RSPACK_TEST_RUNTIME_MODE_RSPACK) {
 			expect(entry).toContain(
-				'import { __rspack_require, __rspack_create_fake_namespace_object } from "./runtime.mjs";'
+				'import { rspackRequire, createFakeNamespaceObject } from "./runtime.mjs";'
 			);
 			expect(entry).toContain(
-				'__rspack_create_fake_namespace_object(module.createRequire(import.meta.url)("node:stream"), 22)'
+				'createFakeNamespaceObject(module.createRequire(import.meta.url)("node:stream"), 22)'
 			);
-			expect(runtime).toContain("export { __rspack_require");
-			expect(runtime).toContain("__rspack_create_fake_namespace_object");
-			expect(runtime.match(/var __rspack_module_factories/g)).toHaveLength(1);
-			expect(entry).not.toContain("export { __rspack_require");
-			expect(entry).not.toContain("as __rspack_require");
+			expect(runtime).toContain("export { rspackRequire");
+			expect(runtime).toContain("createFakeNamespaceObject");
+			expect(runtime.match(/var moduleFactories/g)).toHaveLength(1);
+			expect(entry).not.toContain("export { rspackRequire");
+			expect(entry).not.toContain("as rspackRequire");
 			expect(dynamic).toContain(
-				'import { __rspack_require, __rspack_module_factories, __rspack_compat_get_default_export } from "./runtime.mjs";'
+				'import { rspackRequire, moduleFactories, compatGetDefaultExport } from "./runtime.mjs";'
 			);
 		} else {
 			expect(entry).toContain(

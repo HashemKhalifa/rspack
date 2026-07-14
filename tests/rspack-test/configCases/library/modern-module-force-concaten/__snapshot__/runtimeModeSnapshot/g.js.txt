@@ -1,13 +1,13 @@
-import { __rspack_require, __rspack_module_factories, __rspack_compat_get_default_export } from "./runtime~0.js";
-__rspack_module_factories.add({
+import { rspackRequire, moduleFactories, compatGetDefaultExport } from "./runtime~0.js";
+moduleFactories.add({
 547(module) {
 module.exports = 'foo'
 
 
 },
 });
-const foo = __rspack_require("547");
-var foo_default = /*#__PURE__*/__rspack_compat_get_default_export(foo);
+const foo = rspackRequire("547");
+var foo_default = /*#__PURE__*/compatGetDefaultExport(foo);
 var foo_default_0 = foo_default();
 
 

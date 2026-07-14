@@ -1,21 +1,21 @@
-import { __rspack_require, __rspack_module_factories, __rspack_compat_get_default_export } from "./runtime~0.js";
+import { rspackRequire, moduleFactories, compatGetDefaultExport } from "./runtime~0.js";
 import { createRequire as __rspack_createRequire } from "node:module";
 const __rspack_createRequire_require = __rspack_createRequire(import.meta.url);
-__rspack_module_factories.add({
+moduleFactories.add({
 928(module) {
 module.exports = __rspack_createRequire_require("path");
 
 },
-227(module, __unused_rspack_exports, __rspack_require) {
-const path = __rspack_require(928)
+227(module, __unused_rspack_exports, rspackRequire) {
+const path = rspackRequire(928)
 
 module.exports = path.sep
 
 
 },
 });
-const bar = __rspack_require("227");
-var bar_default = /*#__PURE__*/__rspack_compat_get_default_export(bar);
+const bar = rspackRequire("227");
+var bar_default = /*#__PURE__*/compatGetDefaultExport(bar);
 
 
 

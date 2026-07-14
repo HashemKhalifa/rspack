@@ -26,7 +26,8 @@ use crate::{
   RuntimeCondition, RuntimeGlobals, RuntimeSpec, UsedName, compile_boolean_matcher_from_lists,
   contextify, property_access,
   runtime_globals::{
-    RuntimeVariable, rspack_runtime_variable_name, runtime_globals_to_string, runtime_variable_name,
+    RuntimeVariable, rspack_export_runtime_variable_name, rspack_runtime_variable_name,
+    runtime_globals_to_string, runtime_variable_name,
   },
   runtime_mode::RuntimeMode,
   to_comment, to_normal_comment,
@@ -79,7 +80,7 @@ pub enum RuntimeGlobalsRenderMode {
   /// Renders runtime globals as lexical variables such as `definePropertyGetters`.
   RspackLexical,
   /// Renders runtime globals as exported lexical variables such as
-  /// `__rspack_define_property_getters`.
+  /// `definePropertyGetters`.
   RspackExport,
 }
 
@@ -92,9 +93,10 @@ impl RuntimeGlobalsRenderMode {
   fn render_runtime_variable(self, runtime_variable: &RuntimeVariable) -> String {
     match self {
       Self::Webpack => runtime_variable_name(runtime_variable).to_string(),
-      Self::RspackContext | Self::RspackLexical | Self::RspackExport => {
+      Self::RspackContext | Self::RspackLexical => {
         rspack_runtime_variable_name(runtime_variable).to_string()
       }
+      Self::RspackExport => rspack_export_runtime_variable_name(runtime_variable).to_string(),
     }
   }
 }
@@ -439,15 +441,16 @@ fn runtime_globals_to_render_map(render_mode: RuntimeGlobalsRenderMode) -> Runti
         if runtime_globals == RuntimeGlobals::REQUIRE_SCOPE
           || runtime_globals == RuntimeGlobals::REQUIRE
         {
-          rspack_runtime_variable_name(&RuntimeVariable::Require).to_string()
+          rspack_export_runtime_variable_name(&RuntimeVariable::Require).to_string()
         } else if runtime_globals == RuntimeGlobals::EXPORTS {
-          rspack_runtime_variable_name(&RuntimeVariable::Exports).to_string()
+          rspack_export_runtime_variable_name(&RuntimeVariable::Exports).to_string()
         } else if runtime_globals == RuntimeGlobals::MODULE {
-          rspack_runtime_variable_name(&RuntimeVariable::Module).to_string()
+          rspack_export_runtime_variable_name(&RuntimeVariable::Module).to_string()
         } else if runtime_globals.renderable_require_scope() == runtime_globals {
-          runtime_globals
-            .to_rspack_export_name()
-            .unwrap_or_else(|| runtime_globals_to_string(&runtime_globals))
+          runtime_globals.to_lexical_name().map_or_else(
+            || runtime_globals_to_string(&runtime_globals),
+            str::to_string,
+          )
         } else {
           runtime_globals_to_string(&runtime_globals)
         }

@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use bitflags::bitflags;
-use heck::{ToLowerCamelCase, ToSnakeCase};
+use heck::{ToLowerCamelCase, ToUpperCamelCase};
 use rspack_hash::{RspackHash, RspackHasher};
 use rustc_hash::FxHashMap;
 
@@ -512,6 +512,18 @@ pub fn rspack_runtime_variable_name(runtime_variable: &RuntimeVariable) -> &'sta
   }
 }
 
+pub fn rspack_export_runtime_variable_name(runtime_variable: &RuntimeVariable) -> &'static str {
+  match *runtime_variable {
+    RuntimeVariable::Require => "rspackRequire",
+    RuntimeVariable::Context => "context",
+    RuntimeVariable::Modules => "modules",
+    RuntimeVariable::ModuleCache => "moduleCache",
+    RuntimeVariable::Exports => "exports",
+    RuntimeVariable::Module => "module",
+    RuntimeVariable::StartupExec => "startupExec",
+  }
+}
+
 pub fn runtime_variable_name(runtime_variable: &RuntimeVariable) -> &'static str {
   match *runtime_variable {
     RuntimeVariable::Require => "__webpack_require__",
@@ -603,16 +615,10 @@ impl RuntimeGlobals {
     RUNTIME_GLOBAL_MAP.3.get(self).map(String::as_str)
   }
 
-  pub fn to_rspack_export_name(&self) -> Option<String> {
-    self
-      .to_lexical_name()
-      .map(|name| format!("__rspack_{}", name.to_snake_case()))
-  }
-
   pub fn to_rspack_export_setter_name(&self) -> Option<String> {
     self
       .to_lexical_name()
-      .map(|name| format!("__rspack_set_{}", name.to_snake_case()))
+      .map(|name| format!("set{}", name.to_upper_camel_case()))
   }
 
   pub fn should_initialize_as_object(&self) -> bool {

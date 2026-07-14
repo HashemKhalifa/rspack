@@ -3,7 +3,6 @@ use std::sync::LazyLock;
 use rspack_core::{
   ChunkKind, ChunkUkey, Compilation, RuntimeCodeTemplate, RuntimeGlobals, RuntimeGlobalsRenderMode,
   RuntimeProxyMetadata, RuntimeVariable, SourceType, property_access, render_lexical_declarations,
-  render_rspack_export_declarations,
   rspack_sources::{BoxSource, ConcatSource, RawStringSource, SourceExt},
   runtime_module_owned_define_fields,
 };
@@ -119,12 +118,10 @@ fn render_rspack_runtime_exports(
   }
 
   for (_, runtime_global) in setter_fields.renderable_require_scope().iter_names() {
-    let (Some(lexical_name), Some(setter_name)) = (
-      runtime_global.to_rspack_export_name(),
-      runtime_global.to_rspack_export_setter_name(),
-    ) else {
+    let Some(setter_name) = runtime_global.to_rspack_export_setter_name() else {
       continue;
     };
+    let lexical_name = runtime_template.render_runtime_globals(&runtime_global);
     if emitted_exports.insert(setter_name.clone()) {
       source.push_str(&format!(
         "function {setter_name}(value) {{ return {lexical_name} = value; }}\n"
@@ -232,7 +229,7 @@ pub async fn render_runtime_chunk_runtime_modules(
     bootstrap_runtime_requirements,
   );
   if runtime_template.render_mode() == RuntimeGlobalsRenderMode::RspackExport {
-    sources.add(RawStringSource::from(render_rspack_export_declarations(
+    sources.add(RawStringSource::from(render_lexical_declarations(
       lexical_fields
         .difference(runtime_module_owned_define_fields(compilation, chunk_ukey))
         .difference(*BOOTSTRAP_EXPORT_GLOBALS),
