@@ -61,7 +61,7 @@ import foo_runtime, { foo } from "./foo-runtime.mjs";
 // NAMESPACE OBJECT: ./a.js
 var a_namespaceObject = {};
 __rspack_make_namespace_object(a_namespaceObject);
-__rspack_define_property_getters(a_namespaceObject, {
+__rspack_define_property_getters(a_namespaceObject, { 
   "default": () => (a),
   shared: () => (shared) });
 
@@ -69,7 +69,7 @@ __rspack_define_property_getters(a_namespaceObject, {
 // NAMESPACE OBJECT: ./b.js
 var b_namespaceObject = {};
 __rspack_make_namespace_object(b_namespaceObject);
-__rspack_define_property_getters(b_namespaceObject, {
+__rspack_define_property_getters(b_namespaceObject, { 
   namedFoo: () => (foo),
   shared: () => (b_shared) });
 

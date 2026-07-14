@@ -14,7 +14,7 @@ import { types_namespaceObject } from "./types.mjs";
 // NAMESPACE OBJECT: ./src/rules/duplicate-package/index.js
 var duplicate_package_namespaceObject = {};
 __rspack_make_namespace_object(duplicate_package_namespaceObject);
-__rspack_define_property_getters(duplicate_package_namespaceObject, {
+__rspack_define_property_getters(duplicate_package_namespaceObject, { 
   value: () => (value) });
 
 
@@ -34,7 +34,7 @@ import { __rspack_require, __rspack_define_property_getters, __rspack_make_names
 // NAMESPACE OBJECT: ./src/rules/duplicate-package/types.js
 var types_namespaceObject = {};
 __rspack_make_namespace_object(types_namespaceObject);
-__rspack_define_property_getters(types_namespaceObject, {
+__rspack_define_property_getters(types_namespaceObject, { 
   J: () => (CheckVersionMap) });
 
 

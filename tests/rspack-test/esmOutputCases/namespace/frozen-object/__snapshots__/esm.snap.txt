@@ -3,7 +3,7 @@ import { __webpack_require__ } from "./runtime.mjs";
 // NAMESPACE OBJECT: ./mod.js
 var mod_namespaceObject = {};
 __webpack_require__.r(mod_namespaceObject);
-__webpack_require__.d(mod_namespaceObject, {
+__webpack_require__.d(mod_namespaceObject, { 
   a: () => (a),
   b: () => (b) });
 

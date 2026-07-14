@@ -27,7 +27,7 @@ import { __rspack_require, __rspack_define_property_getters, __rspack_make_names
 // NAMESPACE OBJECT: ./a.js
 var a_namespaceObject = {};
 __rspack_make_namespace_object(a_namespaceObject);
-__rspack_define_property_getters(a_namespaceObject, {
+__rspack_define_property_getters(a_namespaceObject, { 
   "default": () => (a),
   id: () => (id),
   name: () => (a_name) });
@@ -36,7 +36,7 @@ __rspack_define_property_getters(a_namespaceObject, {
 // NAMESPACE OBJECT: ./b.js
 var b_namespaceObject = {};
 __rspack_make_namespace_object(b_namespaceObject);
-__rspack_define_property_getters(b_namespaceObject, {
+__rspack_define_property_getters(b_namespaceObject, { 
   "default": () => (b),
   id: () => (b_id),
   name: () => (b_name) });
@@ -45,7 +45,7 @@ __rspack_define_property_getters(b_namespaceObject, {
 // NAMESPACE OBJECT: ./c.js
 var c_namespaceObject = {};
 __rspack_make_namespace_object(c_namespaceObject);
-__rspack_define_property_getters(c_namespaceObject, {
+__rspack_define_property_getters(c_namespaceObject, { 
   "default": () => (c),
   id: () => (c_id),
   name: () => (c_name) });

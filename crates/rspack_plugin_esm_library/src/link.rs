@@ -856,7 +856,7 @@ Object.keys({}).forEach(function(key) {{
           };
           let define_getters = if !ns_obj.is_empty() {
             format!(
-              "{}({}, {{{} }});\n",
+              "{}({}, {{ {} }});\n",
               runtime_template.render_runtime_globals(&RuntimeGlobals::DEFINE_PROPERTY_GETTERS),
               name,
               ns_obj.join(",")
