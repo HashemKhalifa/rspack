@@ -54,6 +54,23 @@ static CSS_LOADING_WITH_STYLE_SHEET_RUNTIME_REQUIREMENTS: LazyLock<
 > = LazyLock::new(|| RuntimeModuleRuntimeRequirements {
   ..extract_runtime_globals_from_ejs(CSS_LOADING_WITH_STYLE_SHEET_TEMPLATE)
 });
+const RUNTIME_MODULE_VARIABLES: &[&str] = &[
+  "cssLoadingUniqueName",
+  "handleCssComposes",
+  "loadingAttribute",
+  "cssLoadStylesheet",
+  "cssInstalledChunks",
+  "cssOldTags",
+  "cssNewTags",
+  "cssApplyHandler",
+  "cssTextKeyOfLink",
+  "dataRspackPrefix",
+  "getDataRspackId",
+  "applyStyle",
+  "removeStyleElement",
+  "findStyleElement",
+  "insertStyleElement",
+];
 
 #[impl_runtime_module]
 #[derive(Debug)]
@@ -121,6 +138,10 @@ enum TemplateId {
 
 #[async_trait::async_trait]
 impl RuntimeModule for CssLoadingRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    RUNTIME_MODULE_VARIABLES
+  }
+
   fn runtime_requirements(
     &self,
     compilation: &Compilation,

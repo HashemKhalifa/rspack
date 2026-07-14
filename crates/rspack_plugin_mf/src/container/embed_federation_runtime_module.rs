@@ -13,6 +13,14 @@ use rspack_error::Result;
 
 use super::module_federation_runtime_plugin::ModuleFederationRuntimeExperimentsOptions;
 
+const RUNTIME_MODULE_VARIABLES: &[&str] = &[
+  "prevStartup",
+  "hasRun",
+  "mfStartupBase",
+  "mfAsyncStartup",
+  "wrapStartup",
+];
+
 #[cacheable]
 #[derive(Debug, Default, Clone, Hash, PartialEq, Eq)]
 pub struct EmbedFederationRuntimeModuleOptions {
@@ -51,6 +59,10 @@ impl EmbedFederationRuntimeModule {
 
 #[async_trait::async_trait]
 impl RuntimeModule for EmbedFederationRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    RUNTIME_MODULE_VARIABLES
+  }
+
   fn runtime_requirements(
     &self,
     _compilation: &Compilation,

@@ -6,6 +6,8 @@ use rspack_core::{
   impl_runtime_module,
 };
 
+const RUNTIME_MODULE_VARIABLES: &[&str] = &["next"];
+
 #[impl_runtime_module]
 #[derive(Debug)]
 pub struct StartupChunkDependenciesRuntimeModule {
@@ -20,6 +22,10 @@ impl StartupChunkDependenciesRuntimeModule {
 
 #[async_trait::async_trait]
 impl RuntimeModule for StartupChunkDependenciesRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    RUNTIME_MODULE_VARIABLES
+  }
+
   fn runtime_requirements(
     &self,
     _compilation: &Compilation,

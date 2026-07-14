@@ -24,6 +24,7 @@ static INITIALIZE_SHARING_RUNTIME_REQUIREMENTS: LazyLock<RuntimeModuleRuntimeReq
     force_context: RuntimeGlobals::INITIALIZE_SHARING | RuntimeGlobals::SHARE_SCOPE_MAP,
     ..extract_runtime_globals_from_ejs(INITIALIZE_SHARING_TEMPLATE)
   });
+const RUNTIME_MODULE_VARIABLES: &[&str] = &["initPromises", "initTokens"];
 
 #[impl_runtime_module]
 #[derive(Debug)]
@@ -39,6 +40,10 @@ impl ShareRuntimeModule {
 
 #[async_trait::async_trait]
 impl RuntimeModule for ShareRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    RUNTIME_MODULE_VARIABLES
+  }
+
   fn runtime_requirements(
     &self,
     compilation: &Compilation,

@@ -5,6 +5,7 @@ use rspack_core::{
 };
 
 static AUTO_PUBLIC_PATH_TEMPLATE: &str = include_str!("runtime/auto_public_path.ejs");
+const RUNTIME_MODULE_VARIABLES: &[&str] = &["scriptUrl", "document"];
 
 #[impl_runtime_module]
 #[derive(Debug)]
@@ -18,6 +19,10 @@ impl AutoPublicPathRuntimeModule {
 
 #[async_trait::async_trait]
 impl RuntimeModule for AutoPublicPathRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    RUNTIME_MODULE_VARIABLES
+  }
+
   fn stage(&self) -> RuntimeModuleStage {
     RuntimeModuleStage::Attach
   }

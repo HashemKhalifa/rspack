@@ -5,6 +5,8 @@ use rspack_core::{
 
 use crate::get_chunk_runtime_requirements;
 
+const RUNTIME_MODULE_VARIABLES: &[&str] = &["policy"];
+
 #[impl_runtime_module]
 #[derive(Debug)]
 pub struct GetTrustedTypesPolicyRuntimeModule {}
@@ -17,6 +19,10 @@ impl GetTrustedTypesPolicyRuntimeModule {
 
 #[async_trait::async_trait]
 impl RuntimeModule for GetTrustedTypesPolicyRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    RUNTIME_MODULE_VARIABLES
+  }
+
   fn runtime_requirements(
     &self,
     _compilation: &Compilation,

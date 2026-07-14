@@ -247,6 +247,16 @@ pub trait RuntimeModule:
   fn template(&self) -> Vec<(String, String)> {
     vec![]
   }
+  /// Names that this runtime module may declare in the surrounding chunk scope.
+  ///
+  /// `#[impl_runtime_module]` registers these names so they can be reserved before runtime module
+  /// instances are created.
+  fn runtime_module_variables() -> &'static [&'static str]
+  where
+    Self: Sized,
+  {
+    &[]
+  }
   async fn generate(
     &self,
     context: &RuntimeModuleGenerateContext<'_>,
@@ -264,6 +274,18 @@ pub trait RuntimeModule:
   fn runtime_requirements(&self, _compilation: &Compilation) -> RuntimeModuleRuntimeRequirements {
     Default::default()
   }
+}
+
+pub struct RuntimeModuleVariableProvider {
+  pub variables: fn() -> &'static [&'static str],
+}
+
+inventory::collect!(RuntimeModuleVariableProvider);
+
+pub fn all_runtime_module_variables() -> impl Iterator<Item = &'static str> {
+  inventory::iter::<RuntimeModuleVariableProvider>
+    .into_iter()
+    .flat_map(|provider| (provider.variables)().iter().copied())
 }
 
 pub trait AttachableRuntimeModule {

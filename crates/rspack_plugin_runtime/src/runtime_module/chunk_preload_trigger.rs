@@ -10,6 +10,7 @@ use rspack_core::{
 use crate::extract_runtime_globals_from_ejs;
 
 static CHUNK_PRELOAD_TRIGGER_TEMPLATE: &str = include_str!("runtime/chunk_preload_trigger.ejs");
+const RUNTIME_MODULE_VARIABLES: &[&str] = &["chunkPreloadChunkToChildrenMap"];
 static CHUNK_PRELOAD_TRIGGER_RUNTIME_REQUIREMENTS: LazyLock<RuntimeModuleRuntimeRequirements> =
   LazyLock::new(|| extract_runtime_globals_from_ejs(CHUNK_PRELOAD_TRIGGER_TEMPLATE));
 
@@ -28,6 +29,10 @@ impl ChunkPreloadTriggerRuntimeModule {
 
 #[async_trait::async_trait]
 impl RuntimeModule for ChunkPreloadTriggerRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    RUNTIME_MODULE_VARIABLES
+  }
+
   fn template(&self) -> Vec<(String, String)> {
     vec![(
       self.id().to_string(),

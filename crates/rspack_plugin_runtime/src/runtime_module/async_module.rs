@@ -4,6 +4,16 @@ use rspack_core::{
 };
 
 static ASYNC_MODULE_TEMPLATE: &str = include_str!("runtime/async_module.ejs");
+const RUNTIME_MODULE_VARIABLES: &[&str] = &[
+  "hasSymbol",
+  "rspackQueues",
+  "rspackExports",
+  "rspackError",
+  "rspackDone",
+  "rspackDefer",
+  "resolveQueue",
+  "wrapDeps",
+];
 
 #[impl_runtime_module]
 #[derive(Debug)]
@@ -17,6 +27,10 @@ impl AsyncRuntimeModule {
 
 #[async_trait::async_trait]
 impl RuntimeModule for AsyncRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    RUNTIME_MODULE_VARIABLES
+  }
+
   async fn generate(
     &self,
     context: &RuntimeModuleGenerateContext<'_>,

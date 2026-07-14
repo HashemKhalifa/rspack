@@ -121,6 +121,12 @@ pub fn impl_runtime_module(
       }
     }
 
+    ::rspack_core::inventory::submit! {
+      ::rspack_core::RuntimeModuleVariableProvider {
+        variables: <#name #ty_generics as ::rspack_core::RuntimeModule>::runtime_module_variables,
+      }
+    }
+
     #[rspack_cacheable::cacheable_dyn]
     #[async_trait::async_trait]
     impl #impl_generics ::rspack_core::Module for #name #ty_generics #where_clause {

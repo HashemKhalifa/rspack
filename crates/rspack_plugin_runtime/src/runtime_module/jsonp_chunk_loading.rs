@@ -16,6 +16,20 @@ use crate::{
   },
 };
 
+const RUNTIME_MODULE_VARIABLES: &[&str] = &[
+  "jsonpInstalledChunks",
+  "__rspack_jsonp",
+  "jsonpChunkLoadingGlobal",
+  "hotCurrentUpdatedModulesList",
+  "hotWaitingUpdateResolves",
+  "jsonpLoadUpdateChunk",
+  "hotCurrentUpdateChunks",
+  "hotCurrentUpdate",
+  "hotCurrentUpdateRemovedChunks",
+  "hotCurrentUpdateRuntime",
+  "hotApplyHandler",
+];
+
 static JSONP_CHUNK_LOADING_TEMPLATE: &str = include_str!("runtime/jsonp_chunk_loading.ejs");
 static JSONP_CHUNK_LOADING_WITH_PREFETCH_TEMPLATE: &str =
   include_str!("runtime/jsonp_chunk_loading_with_prefetch.ejs");
@@ -159,6 +173,10 @@ enum TemplateId {
 
 #[async_trait::async_trait]
 impl RuntimeModule for JsonpChunkLoadingRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    RUNTIME_MODULE_VARIABLES
+  }
+
   fn runtime_requirements(&self, compilation: &Compilation) -> RuntimeModuleRuntimeRequirements {
     let Some(chunk_ukey) = self.chunk() else {
       return RuntimeModuleRuntimeRequirements::default();

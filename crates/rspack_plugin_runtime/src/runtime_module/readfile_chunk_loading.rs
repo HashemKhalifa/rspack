@@ -15,6 +15,17 @@ use crate::{
   },
 };
 
+const RUNTIME_MODULE_VARIABLES: &[&str] = &[
+  "readFileVmInstalledChunks",
+  "readFileVmInstallChunk",
+  "readFileVmLoadUpdateChunk",
+  "hotCurrentUpdateChunks",
+  "hotCurrentUpdate",
+  "hotCurrentUpdateRemovedChunks",
+  "hotCurrentUpdateRuntime",
+  "hotApplyHandler",
+];
+
 static READFILE_CHUNK_LOADING_WITH_ON_CHUNK_LOAD_TEMPLATE: &str =
   include_str!("runtime/readfile_chunk_loading_with_on_chunk_load.ejs");
 static READFILE_CHUNK_LOADING_TEMPLATE: &str = include_str!("runtime/readfile_chunk_loading.ejs");
@@ -155,6 +166,10 @@ enum TemplateId {
 
 #[async_trait::async_trait]
 impl RuntimeModule for ReadFileChunkLoadingRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    RUNTIME_MODULE_VARIABLES
+  }
+
   fn runtime_requirements(&self, compilation: &Compilation) -> RuntimeModuleRuntimeRequirements {
     let Some(chunk_ukey) = self.chunk() else {
       return RuntimeModuleRuntimeRequirements::default();

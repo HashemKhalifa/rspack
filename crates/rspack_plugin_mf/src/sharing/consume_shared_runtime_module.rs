@@ -23,6 +23,42 @@ static CONSUMES_INITIAL_RUNTIME_REQUIREMENTS: LazyLock<RuntimeModuleRuntimeRequi
   LazyLock::new(|| extract_runtime_globals_from_ejs(CONSUMES_INITIAL_TEMPLATE));
 static CONSUMES_LOADING_RUNTIME_REQUIREMENTS: LazyLock<RuntimeModuleRuntimeRequirements> =
   LazyLock::new(|| extract_runtime_globals_from_ejs(CONSUMES_LOADING_TEMPLATE));
+const RUNTIME_MODULE_VARIABLES: &[&str] = &[
+  "splitAndConvert",
+  "parseRange",
+  "parseVersion",
+  "versionLt",
+  "rangeToString",
+  "satisfy",
+  "ensureExistence",
+  "findVersion",
+  "findSingletonVersionKey",
+  "getInvalidSingletonVersionMessage",
+  "getSingleton",
+  "getSingletonVersion",
+  "getStrictSingletonVersion",
+  "findValidVersion",
+  "getInvalidVersionMessage",
+  "getValidVersion",
+  "warn",
+  "warnInvalidVersion",
+  "get",
+  "init",
+  "load",
+  "loadFallback",
+  "loadVersionCheck",
+  "loadSingleton",
+  "loadSingletonVersionCheck",
+  "loadStrictVersionCheck",
+  "loadStrictSingletonVersionCheck",
+  "loadVersionCheckFallback",
+  "loadSingletonFallback",
+  "loadSingletonVersionCheckFallback",
+  "loadStrictVersionCheckFallback",
+  "loadStrictSingletonVersionCheckFallback",
+  "resolveHandler",
+  "consumeSharedInstalledModules",
+];
 
 #[impl_runtime_module]
 #[derive(Debug)]
@@ -52,6 +88,10 @@ enum TemplateId {
 
 #[async_trait::async_trait]
 impl RuntimeModule for ConsumeSharedRuntimeModule {
+  fn runtime_module_variables() -> &'static [&'static str] {
+    RUNTIME_MODULE_VARIABLES
+  }
+
   fn runtime_requirements(
     &self,
     compilation: &Compilation,
