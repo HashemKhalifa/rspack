@@ -54,12 +54,7 @@ pub(crate) fn find_exact_match<'a, T>(
 ) -> Option<&'a T> {
   matches
     .get(&RequestMatchKey::new(request, layer))
-    .or_else(|| {
-      layer
-        .is_some()
-        .then(|| matches.get(&RequestMatchKey::new(request, None)))
-        .flatten()
-    })
+    .or_else(|| layer.and_then(|_| matches.get(&RequestMatchKey::new(request, None))))
 }
 
 pub(crate) fn find_prefix_match<'rules, 'request, T>(

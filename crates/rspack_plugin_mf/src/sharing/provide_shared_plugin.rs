@@ -362,54 +362,17 @@ impl ProvideSharedPlugin {
     let title = "rspack.ProvideSharedPlugin";
     let error_header = "No version specified and unable to automatically determine one.";
     let lookup_key = RequestMatchKey::new(resource, config.layer.as_deref());
-    if let Some(version) = &config.version {
-      let mut resolved_provides = self.resolved_provides.write().await;
-      resolved_provides.insert(
-        lookup_key.clone(),
-        VersionedProvideOptions {
-          config_id: config.config_id,
-          dependency_ids: dependency_ids.cloned(),
-          request: Some(resource.to_string()),
-          layer: config.layer.clone(),
-          share_key: share_key.to_string(),
-          share_scope: config.share_scope.clone(),
-          version: version.clone(),
-          eager: config.eager,
-          singleton: config.singleton,
-          strict_version: config.strict_version,
-          required_version: config.required_version.clone(),
-          tree_shaking_mode: config.tree_shaking_mode.clone(),
-        },
-      );
+    let version = if let Some(version) = &config.version {
+      version.clone()
     } else if let Some(description) = resource_data.description() {
-      let version = description
+      let Some(version) = description
         .json()
         .as_object()
         .and_then(|d| d.get("version"))
         .and_then(|v| v.as_str())
         .map(|v| v.to_string())
-        .or_else(|| Self::find_parent_package_version(description.path(), share_key));
-
-      if let Some(version) = version {
-        let mut resolved_provides = self.resolved_provides.write().await;
-        resolved_provides.insert(
-          lookup_key.clone(),
-          VersionedProvideOptions {
-            config_id: config.config_id,
-            dependency_ids: dependency_ids.cloned(),
-            request: Some(resource.to_string()),
-            layer: config.layer.clone(),
-            share_key: share_key.to_string(),
-            share_scope: config.share_scope.clone(),
-            version: ProvideVersion::Version(version),
-            eager: config.eager,
-            singleton: config.singleton,
-            strict_version: config.strict_version,
-            required_version: config.required_version.clone(),
-            tree_shaking_mode: config.tree_shaking_mode.clone(),
-          },
-        );
-      } else {
+        .or_else(|| Self::find_parent_package_version(description.path(), share_key))
+      else {
         add_diagnostic(Diagnostic::warn(
           title.to_string(),
           format!(
@@ -417,7 +380,9 @@ impl ProvideSharedPlugin {
             description.path().display()
           ),
         ));
-      }
+        return;
+      };
+      ProvideVersion::Version(version)
     } else {
       add_diagnostic(Diagnostic::warn(
         title.to_string(),
@@ -425,7 +390,26 @@ impl ProvideSharedPlugin {
           "{error_header} No description file (usually package.json) found. Add description file with name and version, or manually specify version in shared config. shared module {key} -> {resource}"
         ),
       ));
-    }
+      return;
+    };
+
+    self.resolved_provides.write().await.insert(
+      lookup_key,
+      VersionedProvideOptions {
+        config_id: config.config_id,
+        dependency_ids: dependency_ids.cloned(),
+        request: Some(resource.to_string()),
+        layer: config.layer.clone(),
+        share_key: share_key.to_string(),
+        share_scope: config.share_scope.clone(),
+        version,
+        eager: config.eager,
+        singleton: config.singleton,
+        strict_version: config.strict_version,
+        required_version: config.required_version.clone(),
+        tree_shaking_mode: config.tree_shaking_mode.clone(),
+      },
+    );
   }
 }
 

@@ -226,40 +226,38 @@ const getShareRequests = (
   shareConfig: SharedConfig,
   rootShareScope: ShareScope = 'default',
 ) => {
-  const requests = (() => {
-    const entry =
-      shareRequestsMap[resolveShareKey(shareConfig.shareKey, shareName)];
-    const variants =
-      entry?.variants ||
-      (entry
-        ? [
-            {
-              shareScope: entry.shareScope,
-              layer: undefined,
-              requests: entry.requests,
-            },
-          ]
-        : []);
-    const expectedScope = normalizeShareScope(
-      resolveShareScope(shareConfig.shareScope, rootShareScope),
-      true,
-      'IndependentSharedPlugin',
-    );
-    const matchesScope = (shareScope: ShareScope) =>
-      shareScopesEqual(shareScope, expectedScope);
-    const exact = variants.filter(
-      ({ layer, shareScope }) =>
-        layer === shareConfig.layer && matchesScope(shareScope),
-    );
-    const selected =
-      exact.length > 0 || shareConfig.layer === undefined
-        ? exact
-        : variants.filter(
-            ({ layer, shareScope }) =>
-              layer === undefined && matchesScope(shareScope),
-          );
-    return selected.flatMap(({ requests }) => requests);
-  })();
+  const entry =
+    shareRequestsMap[resolveShareKey(shareConfig.shareKey, shareName)];
+  const variants =
+    entry?.variants ||
+    (entry
+      ? [
+          {
+            shareScope: entry.shareScope,
+            layer: undefined,
+            requests: entry.requests,
+          },
+        ]
+      : []);
+  const expectedScope = normalizeShareScope(
+    resolveShareScope(shareConfig.shareScope, rootShareScope),
+    true,
+    'IndependentSharedPlugin',
+  );
+  const matchesScope = (shareScope: ShareScope) =>
+    shareScopesEqual(shareScope, expectedScope);
+  const exact = variants.filter(
+    ({ layer, shareScope }) =>
+      layer === shareConfig.layer && matchesScope(shareScope),
+  );
+  const selected =
+    exact.length > 0 || shareConfig.layer === undefined
+      ? exact
+      : variants.filter(
+          ({ layer, shareScope }) =>
+            layer === undefined && matchesScope(shareScope),
+        );
+  const requests = selected.flatMap(({ requests }) => requests);
   return Array.from(
     new Map(
       requests.map(([request, version]) => [

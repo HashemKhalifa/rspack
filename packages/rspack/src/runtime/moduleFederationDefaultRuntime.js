@@ -436,12 +436,12 @@ export default function () {
         ) {
           const primaryScope = options.shareScopeKeys || 'default';
           const shareScopeKeys = [primaryScope];
+          const containerScopes = Array.isArray(containerShareScope)
+            ? containerShareScope
+            : [containerShareScope || 'default'];
           for (const scope of additionalContainerInitScopes) {
             if (scope === primaryScope) continue;
             shareScopeKeys.push(scope);
-            const containerScopes = Array.isArray(containerShareScope)
-              ? containerShareScope
-              : [containerShareScope || 'default'];
             if (!containerScopes.includes(scope)) additionalScopes.push(scope);
           }
           const descriptors = Object.getOwnPropertyDescriptors(options);
@@ -455,7 +455,7 @@ export default function () {
           };
           options = Object.create(Object.getPrototypeOf(options), descriptors);
         }
-        const init = () =>
+        const result =
           runtimeRequire.federation.bundlerRuntime.initContainerEntry({
             shareScope,
             initScope,
@@ -463,7 +463,6 @@ export default function () {
             shareScopeKey: containerShareScope,
             webpackRequire: runtimeRequire,
           });
-        const result = init();
         if (additionalScopes.length === 0) return result;
         const initializeAdditionalScopes = () =>
           Promise.all(

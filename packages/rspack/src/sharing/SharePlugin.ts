@@ -169,8 +169,8 @@ export class SharePlugin {
     ) satisfies NormalizedSharedOptions;
     if (!enhanced) {
       for (const [, config] of sharedOptions) {
-        const unsupported = ['request', 'issuerLayer', 'layer'].find(
-          (field) => config[field as keyof SharedConfig] !== undefined,
+        const unsupported = (['request', 'issuerLayer', 'layer'] as const).find(
+          (field) => config[field] !== undefined,
         );
         if (unsupported) {
           throw new Error(

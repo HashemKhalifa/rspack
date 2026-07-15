@@ -238,7 +238,6 @@ async fn optimize_dependencies(
       continue;
     }
 
-    // Get the runtime referenced exports for this share key
     let runtime_reference_exports = {
       self
         .shared_referenced_exports
@@ -247,84 +246,64 @@ async fn optimize_dependencies(
         .get(&shared_identity)
         .cloned()
     };
-    // Check if this share key is in our shared map and has tree_shaking enabled
     if !self.shared_map.contains_key(&shared_identity) {
       continue;
     }
-    if let Some(runtime_reference_exports) = runtime_reference_exports {
-      if runtime_reference_exports.is_empty() {
-        continue;
+    let Some(runtime_reference_exports) = runtime_reference_exports else {
+      continue;
+    };
+    if runtime_reference_exports.is_empty() {
+      continue;
+    }
+    let Some(real_shared_identifier) = modules_to_process.first().copied() else {
+      continue;
+    };
+    let is_side_effect_free = module_graph
+      .module_by_identifier(&real_shared_identifier)
+      .and_then(|module| module_declared_side_effect_free(module.as_ref()))
+      .unwrap_or(false);
+    if !is_side_effect_free {
+      if let Ok(mut shared_referenced_exports) = self.shared_referenced_exports.write()
+        && let Some(set) = shared_referenced_exports.get_mut(&shared_identity)
+      {
+        set.clear();
       }
+      continue;
+    }
 
-      let real_shared_identifier = modules_to_process.first().copied();
+    exports_info_artifact.reset_all_exports_info_used();
+    for module_id in &modules_to_process {
+      let exports_info_data = exports_info_artifact.get_exports_info_data_mut(module_id);
 
-      // Check if the real shared module is side effect free
-      if let Some(real_shared_identifier) = real_shared_identifier {
-        let is_side_effect_free = {
-          module_graph
-            .module_by_identifier(&real_shared_identifier)
-            .and_then(|module| module_declared_side_effect_free(module.as_ref()))
-            .unwrap_or(false)
-        };
-
-        if !is_side_effect_free {
-          // Clear referenced exports for this share_key when module is not side-effect free
-          if let Ok(mut shared_referenced_exports) = self.shared_referenced_exports.write()
-            && let Some(set) = shared_referenced_exports.get_mut(&shared_identity)
-          {
-            set.clear();
-          }
-          continue;
-        }
-
-        exports_info_artifact.reset_all_exports_info_used();
-        // mark used for collected modules
-        for module_id in &modules_to_process {
-          let exports_info_data = exports_info_artifact.get_exports_info_data_mut(module_id);
-
-          for export_name in runtime_reference_exports.iter() {
-            let export_atom = Atom::from(export_name.as_str());
-            if let Some(export_info) = exports_info_data.named_exports_mut(&export_atom) {
-              // export_info.set_used(rspack_core::UsageState::Used, Some(&runtime_spec));
-              export_info.set_used(rspack_core::UsageState::Used, None);
-            }
-          }
-        }
-
-        // find if can update real share module
-        let exports_info_data =
-          exports_info_artifact.get_exports_info_data_mut(&real_shared_identifier);
-        let can_update_module_used_stage = {
-          let exports_view = exports_info_data.exports();
-          if exports_view.is_empty() {
-            false
-          } else {
-            // Check if all used exports are in the runtime_reference_exports set
-            exports_view.iter().all(|(name, export_info)| {
-              let used = export_info.get_used(None);
-              if used != rspack_core::UsageState::Unknown && used != rspack_core::UsageState::Unused
-              {
-                runtime_reference_exports.contains(&name.to_string())
-              } else {
-                true
-              }
-            })
-          }
-        };
-        if can_update_module_used_stage {
-          // mark used exports per runtime
-          // Mark used exports
-          for export_info in exports_info_data.exports_mut().values_mut() {
-            export_info.set_used_conditionally(
-              |used| *used == rspack_core::UsageState::Unknown,
-              rspack_core::UsageState::Unused,
-              None,
-            );
-            export_info.set_can_mangle_provide(Some(false));
-            export_info.set_can_mangle_use(Some(false));
-          }
+      for export_name in &runtime_reference_exports {
+        let export_atom = Atom::from(export_name.as_str());
+        if let Some(export_info) = exports_info_data.named_exports_mut(&export_atom) {
+          export_info.set_used(rspack_core::UsageState::Used, None);
         }
       }
+    }
+
+    let exports_info_data =
+      exports_info_artifact.get_exports_info_data_mut(&real_shared_identifier);
+    let exports_view = exports_info_data.exports();
+    let can_update_module_used_stage = !exports_view.is_empty()
+      && exports_view.iter().all(|(name, export_info)| {
+        matches!(
+          export_info.get_used(None),
+          rspack_core::UsageState::Unknown | rspack_core::UsageState::Unused
+        ) || runtime_reference_exports.contains(&name.to_string())
+      });
+    if !can_update_module_used_stage {
+      continue;
+    }
+    for export_info in exports_info_data.exports_mut().values_mut() {
+      export_info.set_used_conditionally(
+        |used| *used == rspack_core::UsageState::Unknown,
+        rspack_core::UsageState::Unused,
+        None,
+      );
+      export_info.set_can_mangle_provide(Some(false));
+      export_info.set_can_mangle_use(Some(false));
     }
   }
 
