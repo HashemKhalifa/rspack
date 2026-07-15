@@ -382,21 +382,16 @@ export class IndependentSharedPlugin {
                 };
 
                 statsContent.shared.forEach((targetShared) => {
-                  let candidates = this.buildAssetRecords.filter(
-                    ({ shareKey, version }) =>
+                  const candidates = this.buildAssetRecords.filter(
+                    ({ shareKey, version, layer, shareScope }) =>
                       shareKey === targetShared.name &&
-                      version === targetShared.version,
+                      version === targetShared.version &&
+                      layer === targetShared.layer &&
+                      shareScopesEqual(
+                        shareScope,
+                        targetShared.shareScope ?? 'default',
+                      ),
                   );
-                  if (targetShared.layer !== undefined) {
-                    candidates = candidates.filter(
-                      ({ layer }) => layer === targetShared.layer,
-                    );
-                  }
-                  if (targetShared.shareScope !== undefined) {
-                    candidates = candidates.filter(({ shareScope }) =>
-                      shareScopesEqual(shareScope, targetShared.shareScope!),
-                    );
-                  }
                   if (candidates.length !== 1) return;
                   targetShared.fallback = candidates[0].entry;
                   targetShared.fallbackName = candidates[0].globalName;
