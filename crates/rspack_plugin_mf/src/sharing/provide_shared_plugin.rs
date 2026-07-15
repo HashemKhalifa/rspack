@@ -236,7 +236,7 @@ impl ProvideSharedPlugin {
     if let Some(version) = version {
       let mut resolved_provide_map = self.resolved_provide_map.write().await;
       insert_resolved_config(
-        &mut *resolved_provide_map,
+        &mut resolved_provide_map,
         lookup_key.clone(),
         VersionedProvideOptions {
           config_id,
@@ -264,7 +264,7 @@ impl ProvideSharedPlugin {
       if let Some(version) = version {
         let mut resolved_provide_map = self.resolved_provide_map.write().await;
         insert_resolved_config(
-          &mut *resolved_provide_map,
+          &mut resolved_provide_map,
           lookup_key.clone(),
           VersionedProvideOptions {
             config_id,
@@ -337,7 +337,7 @@ async fn compilation(
 #[plugin_hook(CompilerFinishMake for ProvideSharedPlugin)]
 async fn finish_make(&self, compilation: &mut Compilation) -> Result<()> {
   let resolved_provide_map = self.resolved_provide_map.read().await;
-  let entries = provide_dependencies(&*resolved_provide_map)
+  let entries = provide_dependencies(&resolved_provide_map)
     .into_iter()
     .map(|dependency| {
       (

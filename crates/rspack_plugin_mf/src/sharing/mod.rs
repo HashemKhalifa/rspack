@@ -76,61 +76,6 @@ pub(crate) fn find_prefix_match<'rules, 'request, T>(
   Some((value, request.strip_prefix(key.request())?))
 }
 
-#[cfg(test)]
-mod tests {
-  use rustc_hash::FxHashMap;
-
-  use super::{RequestMatchKey, find_exact_match, find_prefix_match};
-
-  #[test]
-  fn request_match_keys_do_not_parse_layer_delimiters() {
-    let mut matches = FxHashMap::default();
-    matches.insert(RequestMatchKey::new("b)c", Some("a")), 1);
-    matches.insert(RequestMatchKey::new("c", Some("a)b")), 2);
-
-    assert_eq!(find_exact_match(&matches, "b)c", Some("a")), Some(&1));
-    assert_eq!(find_exact_match(&matches, "c", Some("a)b")), Some(&2));
-  }
-
-  #[test]
-  fn exact_match_prefers_layer_then_falls_back() {
-    let mut matches = FxHashMap::default();
-    matches.insert(RequestMatchKey::new("pkg", None), "fallback");
-    matches.insert(RequestMatchKey::new("pkg", Some("rsc")), "layered");
-
-    assert_eq!(
-      find_exact_match(&matches, "pkg", Some("rsc")),
-      Some(&"layered")
-    );
-    assert_eq!(
-      find_exact_match(&matches, "pkg", Some("client")),
-      Some(&"fallback")
-    );
-  }
-
-  #[test]
-  fn prefix_match_is_longest_then_layer_specific() {
-    let matches = vec![
-      (RequestMatchKey::new("pkg/", Some("rsc")), "layered"),
-      (RequestMatchKey::new("pkg/", None), "fallback"),
-      (RequestMatchKey::new("pkg/feature/", None), "feature"),
-    ];
-
-    assert_eq!(
-      find_prefix_match(&matches, "pkg/component", Some("rsc")),
-      Some((&"layered", "component"))
-    );
-    assert_eq!(
-      find_prefix_match(&matches, "pkg/component", Some("client")),
-      Some((&"fallback", "component"))
-    );
-    assert_eq!(
-      find_prefix_match(&matches, "pkg/feature/button", Some("rsc")),
-      Some((&"feature", "button"))
-    );
-  }
-}
-
 const DESCRIPTION_FILE_NAME: &str = "package.json";
 
 fn is_node_modules_dir(dir: &Path) -> bool {
@@ -204,4 +149,59 @@ async fn get_description_file(
   checked_file_paths.sort_unstable();
 
   (None, Some(checked_file_paths))
+}
+
+#[cfg(test)]
+mod tests {
+  use rustc_hash::FxHashMap;
+
+  use super::{RequestMatchKey, find_exact_match, find_prefix_match};
+
+  #[test]
+  fn request_match_keys_do_not_parse_layer_delimiters() {
+    let mut matches = FxHashMap::default();
+    matches.insert(RequestMatchKey::new("b)c", Some("a")), 1);
+    matches.insert(RequestMatchKey::new("c", Some("a)b")), 2);
+
+    assert_eq!(find_exact_match(&matches, "b)c", Some("a")), Some(&1));
+    assert_eq!(find_exact_match(&matches, "c", Some("a)b")), Some(&2));
+  }
+
+  #[test]
+  fn exact_match_prefers_layer_then_falls_back() {
+    let mut matches = FxHashMap::default();
+    matches.insert(RequestMatchKey::new("pkg", None), "fallback");
+    matches.insert(RequestMatchKey::new("pkg", Some("rsc")), "layered");
+
+    assert_eq!(
+      find_exact_match(&matches, "pkg", Some("rsc")),
+      Some(&"layered")
+    );
+    assert_eq!(
+      find_exact_match(&matches, "pkg", Some("client")),
+      Some(&"fallback")
+    );
+  }
+
+  #[test]
+  fn prefix_match_is_longest_then_layer_specific() {
+    let matches = vec![
+      (RequestMatchKey::new("pkg/", Some("rsc")), "layered"),
+      (RequestMatchKey::new("pkg/", None), "fallback"),
+      (RequestMatchKey::new("pkg/feature/", None), "feature"),
+    ];
+
+    assert_eq!(
+      find_prefix_match(&matches, "pkg/component", Some("rsc")),
+      Some((&"layered", "component"))
+    );
+    assert_eq!(
+      find_prefix_match(&matches, "pkg/component", Some("client")),
+      Some((&"fallback", "component"))
+    );
+    assert_eq!(
+      find_prefix_match(&matches, "pkg/feature/button", Some("rsc")),
+      Some((&"feature", "button"))
+    );
+  }
 }

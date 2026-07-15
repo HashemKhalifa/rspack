@@ -199,10 +199,10 @@ impl From<RawSharedContainerPluginOptions> for SharedContainerPluginOptions {
       request: value.request,
       version: value.version,
       share_key,
-      share_scope: value
-        .share_scope
-        .map(into_share_scope)
-        .unwrap_or_else(|| ShareScope::Single("default".to_string())),
+      share_scope: value.share_scope.map_or_else(
+        || ShareScope::Single("default".to_string()),
+        into_share_scope,
+      ),
       layer: value.layer,
       library: value.library.into(),
       file_name: value.file_name.map(Into::into),
@@ -250,10 +250,10 @@ impl From<RawOptimizeSharedConfig> for OptimizeSharedConfig {
       request,
       issuer_layer: value.issuer_layer,
       share_key: value.share_key,
-      share_scope: value
-        .share_scope
-        .map(into_share_scope)
-        .unwrap_or_else(|| ShareScope::Single("default".to_string())),
+      share_scope: value.share_scope.map_or_else(
+        || ShareScope::Single("default".to_string()),
+        into_share_scope,
+      ),
       tree_shaking: value.tree_shaking,
       used_exports: value.used_exports.unwrap_or_default(),
       layer: value.layer,
@@ -480,10 +480,10 @@ impl From<RawModuleFederationManifestPluginOptions> for ModuleFederationManifest
           name: shared.name,
           version: shared.version,
           required_version: shared.required_version,
-          share_scope: shared
-            .share_scope
-            .map(into_share_scope)
-            .unwrap_or_else(|| ShareScope::Single("default".to_string())),
+          share_scope: shared.share_scope.map_or_else(
+            || ShareScope::Single("default".to_string()),
+            into_share_scope,
+          ),
           layer: shared.layer,
           singleton: shared.singleton,
         })
