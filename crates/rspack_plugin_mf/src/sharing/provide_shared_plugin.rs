@@ -7,13 +7,13 @@ use std::{
 use regex::Regex;
 use rspack_core::{
   BoxDependency, BoxModule, Compilation, CompilationParams, CompilerCompilation,
-  CompilerFinishMake, DependencyType, EntryOptions, ModuleFactoryCreateData,
-  NormalModuleCreateData, NormalModuleFactoryModule, Plugin,
+  CompilerFinishMake, DependencyId, DependencyType, EntryOptions, ModuleFactoryCreateData,
+  NormalModuleCreateData, NormalModuleFactoryBeforeResolve, NormalModuleFactoryModule, Plugin,
 };
 use rspack_error::{Diagnostic, Result};
 use rspack_hook::{plugin, plugin_hook};
 use rspack_loader_runner::ResourceData;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use tokio::sync::RwLock;
 
 use super::{
@@ -47,6 +47,7 @@ pub struct ProvideOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionedProvideOptions {
   config_id: usize,
+  dependency_ids: Option<FxHashSet<DependencyId>>,
   pub request: Option<String>,
   pub layer: Option<String>,
   pub share_key: String,
@@ -59,10 +60,17 @@ pub struct VersionedProvideOptions {
   pub tree_shaking_mode: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+struct ResolvedProvideResource<'a> {
+  request: &'a str,
+  data: &'a ResourceData,
+}
+
 impl ProvideOptions {
   fn to_versioned(&self) -> VersionedProvideOptions {
     VersionedProvideOptions {
       config_id: self.config_id,
+      dependency_ids: None,
       request: self.request.clone(),
       layer: self.layer.clone(),
       share_key: self.share_key.clone(),
@@ -105,19 +113,99 @@ fn insert_unique_config<T: PartialEq>(
   }
 }
 
-fn insert_resolved_config(
-  configs: &mut FxHashMap<RequestMatchKey, Vec<VersionedProvideOptions>>,
-  key: RequestMatchKey,
-  config: VersionedProvideOptions,
-) {
-  let entries = configs.entry(key).or_default();
-  if let Some(existing) = entries
-    .iter_mut()
-    .find(|existing| existing.config_id == config.config_id)
-  {
-    *existing = config;
-  } else {
-    entries.push(config);
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ResolvedProvideIdentity {
+  lookup_key: RequestMatchKey,
+  config_id: usize,
+}
+
+#[derive(Debug, Default)]
+struct ResolvedProvides {
+  configs: FxHashMap<RequestMatchKey, Vec<VersionedProvideOptions>>,
+  dependency_index: FxHashMap<DependencyId, FxHashSet<ResolvedProvideIdentity>>,
+}
+
+impl ResolvedProvides {
+  fn insert(&mut self, key: RequestMatchKey, mut config: VersionedProvideOptions) {
+    if config
+      .dependency_ids
+      .as_ref()
+      .is_some_and(FxHashSet::is_empty)
+    {
+      return;
+    }
+    let identity = ResolvedProvideIdentity {
+      lookup_key: key.clone(),
+      config_id: config.config_id,
+    };
+    if let Some(dependency_ids) = &config.dependency_ids {
+      for dependency_id in dependency_ids {
+        self
+          .dependency_index
+          .entry(*dependency_id)
+          .or_default()
+          .insert(identity.clone());
+      }
+    }
+
+    let entries = self.configs.entry(key).or_default();
+    if let Some(existing) = entries
+      .iter_mut()
+      .find(|existing| existing.config_id == config.config_id)
+    {
+      if let Some(existing_dependency_ids) = existing.dependency_ids.take() {
+        config
+          .dependency_ids
+          .get_or_insert_default()
+          .extend(existing_dependency_ids);
+      }
+      *existing = config;
+    } else {
+      entries.push(config);
+    }
+  }
+
+  fn remove_dependency(&mut self, dependency_id: &DependencyId) {
+    let Some(identities) = self.dependency_index.remove(dependency_id) else {
+      return;
+    };
+    for identity in identities {
+      let remove_key = self
+        .configs
+        .get_mut(&identity.lookup_key)
+        .is_some_and(|entries| {
+          entries.retain_mut(|config| {
+            if config.config_id != identity.config_id {
+              return true;
+            }
+            let Some(dependency_ids) = &mut config.dependency_ids else {
+              return true;
+            };
+            dependency_ids.remove(dependency_id);
+            !dependency_ids.is_empty()
+          });
+          entries.is_empty()
+        });
+      if remove_key {
+        self.configs.remove(&identity.lookup_key);
+      }
+    }
+  }
+
+  fn remove_dependencies(&mut self, dependency_ids: impl IntoIterator<Item = DependencyId>) {
+    for dependency_id in dependency_ids {
+      self.remove_dependency(&dependency_id);
+    }
+  }
+
+  fn retain_dependencies(&mut self, mut retain: impl FnMut(&DependencyId) -> bool) {
+    let removed = self
+      .dependency_index
+      .keys()
+      .filter(|dependency_id| !retain(dependency_id))
+      .copied()
+      .collect::<Vec<_>>();
+    self.remove_dependencies(removed);
   }
 }
 
@@ -166,7 +254,7 @@ fn provide_dependencies(
 #[derive(Debug)]
 pub struct ProvideSharedPlugin {
   provides: Vec<(String, ProvideOptions)>,
-  resolved_provide_map: RwLock<FxHashMap<RequestMatchKey, Vec<VersionedProvideOptions>>>,
+  resolved_provides: RwLock<ResolvedProvides>,
   match_provides: RwLock<FxHashMap<RequestMatchKey, Vec<ProvideOptions>>>,
   prefix_match_provides: RwLock<Vec<(RequestMatchKey, Vec<ProvideOptions>)>>,
 }
@@ -228,28 +316,69 @@ impl ProvideSharedPlugin {
     layer: Option<String>,
     resource: &str,
     resource_data: &ResourceData,
+    add_diagnostic: impl FnMut(Diagnostic),
+  ) {
+    let config = ProvideOptions {
+      config_id,
+      request: None,
+      layer,
+      share_key: share_key.to_string(),
+      share_scope: share_scope.clone(),
+      version: version.cloned(),
+      eager,
+      singleton,
+      required_version,
+      strict_version,
+      tree_shaking_mode,
+    };
+    self
+      .provide_shared_module_from_config(
+        &config,
+        key,
+        share_key,
+        ResolvedProvideResource {
+          request: resource,
+          data: resource_data,
+        },
+        None,
+        add_diagnostic,
+      )
+      .await;
+  }
+
+  async fn provide_shared_module_from_config(
+    &self,
+    config: &ProvideOptions,
+    key: &str,
+    share_key: &str,
+    resolved: ResolvedProvideResource<'_>,
+    dependency_ids: Option<&FxHashSet<DependencyId>>,
     mut add_diagnostic: impl FnMut(Diagnostic),
   ) {
+    let ResolvedProvideResource {
+      request: resource,
+      data: resource_data,
+    } = resolved;
     let title = "rspack.ProvideSharedPlugin";
     let error_header = "No version specified and unable to automatically determine one.";
-    let lookup_key = RequestMatchKey::new(resource, layer.as_deref());
-    if let Some(version) = version {
-      let mut resolved_provide_map = self.resolved_provide_map.write().await;
-      insert_resolved_config(
-        &mut resolved_provide_map,
+    let lookup_key = RequestMatchKey::new(resource, config.layer.as_deref());
+    if let Some(version) = &config.version {
+      let mut resolved_provides = self.resolved_provides.write().await;
+      resolved_provides.insert(
         lookup_key.clone(),
         VersionedProvideOptions {
-          config_id,
+          config_id: config.config_id,
+          dependency_ids: dependency_ids.cloned(),
           request: Some(resource.to_string()),
-          layer: layer.clone(),
+          layer: config.layer.clone(),
           share_key: share_key.to_string(),
-          share_scope: share_scope.clone(),
-          version: version.to_owned(),
-          eager,
-          singleton,
-          strict_version,
-          required_version,
-          tree_shaking_mode: tree_shaking_mode.clone(),
+          share_scope: config.share_scope.clone(),
+          version: version.clone(),
+          eager: config.eager,
+          singleton: config.singleton,
+          strict_version: config.strict_version,
+          required_version: config.required_version.clone(),
+          tree_shaking_mode: config.tree_shaking_mode.clone(),
         },
       );
     } else if let Some(description) = resource_data.description() {
@@ -262,22 +391,22 @@ impl ProvideSharedPlugin {
         .or_else(|| Self::find_parent_package_version(description.path(), share_key));
 
       if let Some(version) = version {
-        let mut resolved_provide_map = self.resolved_provide_map.write().await;
-        insert_resolved_config(
-          &mut resolved_provide_map,
+        let mut resolved_provides = self.resolved_provides.write().await;
+        resolved_provides.insert(
           lookup_key.clone(),
           VersionedProvideOptions {
-            config_id,
+            config_id: config.config_id,
+            dependency_ids: dependency_ids.cloned(),
             request: Some(resource.to_string()),
-            layer: layer.clone(),
+            layer: config.layer.clone(),
             share_key: share_key.to_string(),
-            share_scope: share_scope.clone(),
+            share_scope: config.share_scope.clone(),
             version: ProvideVersion::Version(version),
-            eager,
-            singleton,
-            strict_version,
-            required_version,
-            tree_shaking_mode: tree_shaking_mode.clone(),
+            eager: config.eager,
+            singleton: config.singleton,
+            strict_version: config.strict_version,
+            required_version: config.required_version.clone(),
+            tree_shaking_mode: config.tree_shaking_mode.clone(),
           },
         );
       } else {
@@ -315,7 +444,7 @@ async fn compilation(
     Arc::new(ProvideSharedModuleFactory::default()),
   );
 
-  let mut resolved_provide_map = self.resolved_provide_map.write().await;
+  let mut resolved_provides = self.resolved_provides.write().await;
   let mut match_provides = self.match_provides.write().await;
   let mut prefix_match_provides = self.prefix_match_provides.write().await;
   match_provides.clear();
@@ -324,7 +453,7 @@ async fn compilation(
     let actual_request = config.request.as_deref().unwrap_or(request);
     let lookup_key = RequestMatchKey::new(actual_request, config.layer.as_deref());
     if RELATIVE_REQUEST.is_match(actual_request) || ABSOLUTE_REQUEST.is_match(actual_request) {
-      insert_resolved_config(&mut resolved_provide_map, lookup_key, config.to_versioned());
+      resolved_provides.insert(lookup_key, config.to_versioned());
     } else if actual_request.ends_with('/') {
       insert_unique_prefix_config(&mut prefix_match_provides, lookup_key, config.clone());
     } else {
@@ -336,19 +465,27 @@ async fn compilation(
 
 #[plugin_hook(CompilerFinishMake for ProvideSharedPlugin)]
 async fn finish_make(&self, compilation: &mut Compilation) -> Result<()> {
-  let resolved_provide_map = self.resolved_provide_map.read().await;
-  let entries = provide_dependencies(&resolved_provide_map)
-    .into_iter()
-    .map(|dependency| {
-      (
-        Box::new(dependency) as BoxDependency,
-        EntryOptions {
-          name: None,
-          ..Default::default()
-        },
-      )
-    })
-    .collect::<Vec<_>>();
+  let entries = {
+    let module_graph = compilation.get_module_graph();
+    let mut resolved_provides = self.resolved_provides.write().await;
+    resolved_provides.retain_dependencies(|dependency_id| {
+      module_graph
+        .connection_by_dependency_id(dependency_id)
+        .is_some()
+    });
+    provide_dependencies(&resolved_provides.configs)
+      .into_iter()
+      .map(|dependency| {
+        (
+          Box::new(dependency) as BoxDependency,
+          EntryOptions {
+            name: None,
+            ..Default::default()
+          },
+        )
+      })
+      .collect::<Vec<_>>()
+  };
   compilation.add_include(entries).await?;
   Ok(())
 }
@@ -360,8 +497,16 @@ async fn normal_module_factory_module(
   create_data: &NormalModuleCreateData,
   module: &mut BoxModule,
 ) -> Result<()> {
-  let resource = create_data.resource_resolve_data.resource();
+  let dependency_ids = data
+    .dependencies
+    .iter()
+    .map(|dependency| *dependency.id())
+    .collect::<FxHashSet<_>>();
   let resource_data = create_data.resource_resolve_data.as_ref();
+  let resolved = ResolvedProvideResource {
+    request: resource_data.resource(),
+    data: resource_data,
+  };
   let effective_layer = module
     .get_layer()
     .cloned()
@@ -374,20 +519,12 @@ async fn normal_module_factory_module(
   if let Some(configs) = matched {
     for config in configs {
       self
-        .provide_shared_module(
-          config.config_id,
+        .provide_shared_module_from_config(
+          &config,
           request,
           &config.share_key,
-          &config.share_scope,
-          config.version.as_ref(),
-          config.eager,
-          config.singleton,
-          config.required_version.clone(),
-          config.strict_version,
-          config.tree_shaking_mode.clone(),
-          config.layer.clone(),
-          resource,
-          resource_data,
+          resolved,
+          Some(&dependency_ids),
           |d| data.diagnostics.push(d),
         )
         .await;
@@ -401,26 +538,44 @@ async fn normal_module_factory_module(
   if let Some((configs, remainder)) = prefix_match {
     for config in configs {
       self
-        .provide_shared_module(
-          config.config_id,
+        .provide_shared_module_from_config(
+          &config,
           request,
           &(config.share_key.clone() + remainder.as_str()),
-          &config.share_scope,
-          config.version.as_ref(),
-          config.eager,
-          config.singleton,
-          config.required_version.clone(),
-          config.strict_version,
-          config.tree_shaking_mode.clone(),
-          config.layer.clone(),
-          resource,
-          resource_data,
+          resolved,
+          Some(&dependency_ids),
           |d| data.diagnostics.push(d),
         )
         .await;
     }
   }
   Ok(())
+}
+
+#[plugin_hook(NormalModuleFactoryBeforeResolve for ProvideSharedPlugin)]
+async fn normal_module_factory_before_resolve(
+  &self,
+  data: &mut ModuleFactoryCreateData,
+) -> Result<Option<bool>> {
+  let dependency_ids = data
+    .dependencies
+    .iter()
+    .map(|dependency| *dependency.id())
+    .collect::<Vec<_>>();
+  let has_resolved_dependency = {
+    let resolved_provides = self.resolved_provides.read().await;
+    dependency_ids.iter().any(|dependency_id| {
+      resolved_provides
+        .dependency_index
+        .contains_key(dependency_id)
+    })
+  };
+  if !has_resolved_dependency {
+    return Ok(None);
+  }
+  let mut resolved_provides = self.resolved_provides.write().await;
+  resolved_provides.remove_dependencies(dependency_ids);
+  Ok(None)
 }
 
 impl Plugin for ProvideSharedPlugin {
@@ -433,6 +588,10 @@ impl Plugin for ProvideSharedPlugin {
     ctx.compiler_hooks.finish_make.tap(finish_make::new(self));
     ctx
       .normal_module_factory_hooks
+      .before_resolve
+      .tap(normal_module_factory_before_resolve::new(self));
+    ctx
+      .normal_module_factory_hooks
       .module
       .tap(normal_module_factory_module::new(self));
     Ok(())
@@ -441,10 +600,11 @@ impl Plugin for ProvideSharedPlugin {
 
 #[cfg(test)]
 mod tests {
+  use rspack_core::DependencyId;
   use rustc_hash::FxHashMap;
 
   use super::{
-    ProvideOptions, ProvideVersion, insert_resolved_config, insert_unique_config,
+    ProvideOptions, ProvideVersion, ResolvedProvides, insert_unique_config,
     insert_unique_prefix_config,
   };
   use crate::{
@@ -494,15 +654,15 @@ mod tests {
         options.config_id = config_id;
         options.to_versioned()
       })
-      .fold(FxHashMap::default(), |mut resolved, options| {
-        insert_resolved_config(
-          &mut resolved,
+      .fold(ResolvedProvides::default(), |mut resolved, options| {
+        resolved.insert(
           RequestMatchKey::new("/resolved/pkg.js", Some("server")),
           options,
         );
         resolved
       });
     let resolved = resolved
+      .configs
       .get(&RequestMatchKey::new("/resolved/pkg.js", Some("server")))
       .expect("resolved providers");
     assert_eq!(resolved.len(), 2);
@@ -519,19 +679,19 @@ mod tests {
   #[test]
   fn resolved_provider_version_is_replaced_without_dropping_other_providers() {
     let key = RequestMatchKey::new("/resolved/pkg.js", Some("server"));
-    let mut resolved = FxHashMap::default();
+    let mut resolved = ResolvedProvides::default();
     let first = provide_options("pkg-a", "scope-a", Some("server")).to_versioned();
     let mut other_options = provide_options("pkg-b", "scope-b", Some("server"));
     other_options.config_id = 1;
     let other = other_options.to_versioned();
-    insert_resolved_config(&mut resolved, key.clone(), first.clone());
-    insert_resolved_config(&mut resolved, key.clone(), other.clone());
+    resolved.insert(key.clone(), first.clone());
+    resolved.insert(key.clone(), other.clone());
 
     let mut updated = first;
     updated.version = ProvideVersion::Version("2.0.0".to_string());
-    insert_resolved_config(&mut resolved, key.clone(), updated);
+    resolved.insert(key.clone(), updated);
 
-    let providers = resolved.get(&key).expect("resolved providers");
+    let providers = resolved.configs.get(&key).expect("resolved providers");
     assert_eq!(providers.len(), 2);
     assert!(providers.iter().any(|provider| {
       provider.share_key == "pkg-a"
@@ -543,17 +703,17 @@ mod tests {
   #[test]
   fn configured_versions_of_the_same_shared_identity_coexist() {
     let key = RequestMatchKey::new("/resolved/pkg.js", None);
-    let mut resolved = FxHashMap::default();
+    let mut resolved = ResolvedProvides::default();
     let first = provide_options("pkg", "default", None).to_versioned();
     let mut second_options = provide_options("pkg", "default", None);
     second_options.config_id = 1;
     second_options.version = Some(ProvideVersion::Version("2.0.0".to_string()));
     let second = second_options.to_versioned();
 
-    insert_resolved_config(&mut resolved, key.clone(), first);
-    insert_resolved_config(&mut resolved, key.clone(), second);
+    resolved.insert(key.clone(), first);
+    resolved.insert(key.clone(), second);
 
-    let providers = resolved.get(&key).expect("resolved providers");
+    let providers = resolved.configs.get(&key).expect("resolved providers");
     assert_eq!(providers.len(), 2);
     assert!(
       providers
@@ -565,6 +725,50 @@ mod tests {
         .iter()
         .any(|provider| provider.version == ProvideVersion::Version("2.0.0".to_string()))
     );
+  }
+
+  #[test]
+  fn dependency_resolutions_move_without_dropping_other_issuers() {
+    let old_key = RequestMatchKey::new("/old/pkg.js", None);
+    let new_key = RequestMatchKey::new("/new/pkg.js", None);
+    let moved_dependency = DependencyId::from(1);
+    let unchanged_dependency = DependencyId::from(2);
+    let mut resolved = ResolvedProvides::default();
+
+    let mut moved_from_old = provide_options("pkg", "default", None).to_versioned();
+    moved_from_old.dependency_ids = Some([moved_dependency].into_iter().collect());
+    resolved.insert(old_key.clone(), moved_from_old);
+    let mut unchanged_at_old = provide_options("pkg", "default", None).to_versioned();
+    unchanged_at_old.dependency_ids = Some([unchanged_dependency].into_iter().collect());
+    resolved.insert(old_key.clone(), unchanged_at_old);
+
+    assert_eq!(
+      resolved.configs[&old_key][0]
+        .dependency_ids
+        .as_ref()
+        .expect("dynamic provider dependencies")
+        .len(),
+      2
+    );
+
+    resolved.remove_dependency(&moved_dependency);
+    let old_dependencies = resolved.configs[&old_key][0]
+      .dependency_ids
+      .as_ref()
+      .expect("dynamic provider dependencies");
+    assert_eq!(old_dependencies.len(), 1);
+    assert!(old_dependencies.contains(&unchanged_dependency));
+
+    let mut moved = provide_options("pkg", "default", None).to_versioned();
+    moved.dependency_ids = Some([moved_dependency].into_iter().collect());
+    resolved.insert(new_key.clone(), moved);
+
+    assert_eq!(resolved.configs[&old_key].len(), 1);
+    assert_eq!(resolved.configs[&new_key].len(), 1);
+
+    resolved.retain_dependencies(|dependency_id| dependency_id == &moved_dependency);
+    assert!(!resolved.configs.contains_key(&old_key));
+    assert_eq!(resolved.configs[&new_key].len(), 1);
   }
 
   #[test]
