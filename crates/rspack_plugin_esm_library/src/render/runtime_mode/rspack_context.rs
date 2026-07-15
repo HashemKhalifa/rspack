@@ -6,10 +6,9 @@ use rspack_util::fx_hash::FxIndexSet;
 
 use super::{
   RuntimeImportRenderContext, RuntimeModeRenderer, RuntimeRenderContext, already_imports_runtime,
-  import_spec_imports_any, render_raw_import_stmts, render_runtime_chunk_import,
-  render_runtime_global_definitions, render_runtime_prelude,
+  render_raw_import_stmts, render_runtime_chunk_import, render_runtime_global_definitions,
+  render_runtime_prelude,
 };
-use crate::chunk_link::RawImportSource;
 
 pub(super) struct RspackContextRuntimeRenderer;
 
@@ -49,10 +48,9 @@ impl RuntimeModeRenderer for RspackContextRuntimeRenderer {
     source.add(render_raw_import_stmts(
       context.compilation,
       context.chunk_link,
-      |raw_import_source, import_spec| {
-        matches!(raw_import_source, RawImportSource::Source((request, _)) if request.contains("__RSPACK_ESM_CHUNK_"))
-          && import_spec_imports_any(import_spec, &runtime_import_match_idents)
-      },
+      None,
+      &runtime_import_match_idents,
+      None,
     ));
     source
   }

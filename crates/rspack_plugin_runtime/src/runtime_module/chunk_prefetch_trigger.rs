@@ -14,7 +14,7 @@ const RUNTIME_MODULE_VARIABLES: &[&str] = &["chunkPrefetchChunkToChildrenMap"];
 static CHUNK_PREFETCH_TRIGGER_RUNTIME_REQUIREMENTS: LazyLock<RuntimeModuleRuntimeRequirements> =
   LazyLock::new(|| extract_runtime_globals_from_ejs(CHUNK_PREFETCH_TRIGGER_TEMPLATE));
 
-#[impl_runtime_module]
+#[impl_runtime_module(runtime_module_variables)]
 #[derive(Debug)]
 pub struct ChunkPrefetchTriggerRuntimeModule {
   #[cacheable(with=AsMap)]

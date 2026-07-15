@@ -7,7 +7,7 @@ use crate::get_chunk_runtime_requirements;
 
 const RUNTIME_MODULE_VARIABLES: &[&str] = &["policy"];
 
-#[impl_runtime_module]
+#[impl_runtime_module(runtime_module_variables)]
 #[derive(Debug)]
 pub struct GetTrustedTypesPolicyRuntimeModule {}
 

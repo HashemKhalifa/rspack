@@ -7,7 +7,7 @@ use rspack_core::{
 static AUTO_PUBLIC_PATH_TEMPLATE: &str = include_str!("runtime/auto_public_path.ejs");
 const RUNTIME_MODULE_VARIABLES: &[&str] = &["scriptUrl", "document"];
 
-#[impl_runtime_module]
+#[impl_runtime_module(runtime_module_variables)]
 #[derive(Debug)]
 pub struct AutoPublicPathRuntimeModule {}
 

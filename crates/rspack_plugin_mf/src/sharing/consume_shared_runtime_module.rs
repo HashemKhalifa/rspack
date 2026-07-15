@@ -60,7 +60,7 @@ const RUNTIME_MODULE_VARIABLES: &[&str] = &[
   "consumeSharedInstalledModules",
 ];
 
-#[impl_runtime_module]
+#[impl_runtime_module(runtime_module_variables)]
 #[derive(Debug)]
 pub struct ConsumeSharedRuntimeModule {
   enhanced: bool,

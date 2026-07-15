@@ -7,11 +7,10 @@ use rspack_util::fx_hash::FxIndexSet;
 
 use super::{
   RuntimeImportRenderContext, RuntimeModeRenderer, RuntimeRenderContext, already_imports_runtime,
-  get_chunk, import_spec_imports_any, render_intercept_module_execution_definition,
-  render_module_cache_definition, render_module_factories_definition, render_raw_import_stmts,
-  render_runtime_chunk_import, render_runtime_prelude,
+  get_chunk, render_intercept_module_execution_definition, render_module_cache_definition,
+  render_module_factories_definition, render_raw_import_stmts, render_runtime_chunk_import,
+  render_runtime_prelude,
 };
-use crate::chunk_link::RawImportSource;
 
 pub(super) struct RspackExportRuntimeRenderer;
 
@@ -105,16 +104,9 @@ impl RuntimeModeRenderer for RspackExportRuntimeRenderer {
     source.add(render_raw_import_stmts(
       context.compilation,
       context.chunk_link,
-      |raw_import_source, import_spec| {
-        if matches!(raw_import_source, RawImportSource::Chunk(import_chunk) if import_chunk == context.runtime_chunk_ukey)
-          && import_spec_imports_any(import_spec, &legacy_context_idents)
-        {
-          return true;
-        }
-        matches!(raw_import_source, RawImportSource::Source((request, _)) if request.contains("__RSPACK_ESM_CHUNK_"))
-          && (import_spec_imports_any(import_spec, &runtime_import_match_idents)
-            || import_spec_imports_any(import_spec, &legacy_context_idents))
-      },
+      Some(context.runtime_chunk_ukey),
+      &runtime_import_match_idents,
+      Some(&legacy_context_idents),
     ));
     source
   }

@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use bitflags::bitflags;
-use heck::{ToLowerCamelCase, ToUpperCamelCase};
+use heck::ToLowerCamelCase;
 use rspack_hash::{RspackHash, RspackHasher};
 use rustc_hash::FxHashMap;
 
@@ -616,9 +616,12 @@ impl RuntimeGlobals {
   }
 
   pub fn to_rspack_export_setter_name(&self) -> Option<String> {
-    self
-      .to_lexical_name()
-      .map(|name| format!("set{}", name.to_upper_camel_case()))
+    let name = self.to_lexical_name()?;
+    let mut setter = String::with_capacity(name.len() + 3);
+    setter.push_str("set");
+    setter.push(name.as_bytes()[0].to_ascii_uppercase() as char);
+    setter.push_str(&name[1..]);
+    Some(setter)
   }
 
   pub fn should_initialize_as_object(&self) -> bool {

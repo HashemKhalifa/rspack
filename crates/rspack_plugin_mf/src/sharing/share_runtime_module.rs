@@ -26,7 +26,7 @@ static INITIALIZE_SHARING_RUNTIME_REQUIREMENTS: LazyLock<RuntimeModuleRuntimeReq
   });
 const RUNTIME_MODULE_VARIABLES: &[&str] = &["initPromises", "initTokens"];
 
-#[impl_runtime_module]
+#[impl_runtime_module(runtime_module_variables)]
 #[derive(Debug)]
 pub struct ShareRuntimeModule {
   enhanced: bool,

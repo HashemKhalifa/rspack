@@ -5,7 +5,7 @@ use rspack_core::{
 
 const RUNTIME_MODULE_VARIABLES: &[&str] = &["deferred"];
 
-#[impl_runtime_module]
+#[impl_runtime_module(runtime_module_variables)]
 #[derive(Debug)]
 pub struct OnChunkLoadedRuntimeModule {}
 

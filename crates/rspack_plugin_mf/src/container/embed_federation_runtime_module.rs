@@ -28,7 +28,7 @@ pub struct EmbedFederationRuntimeModuleOptions {
   pub experiments: ModuleFederationRuntimeExperimentsOptions,
 }
 
-#[impl_runtime_module]
+#[impl_runtime_module(runtime_module_variables)]
 #[derive(Debug)]
 pub struct EmbedFederationRuntimeModule {
   options: EmbedFederationRuntimeModuleOptions,

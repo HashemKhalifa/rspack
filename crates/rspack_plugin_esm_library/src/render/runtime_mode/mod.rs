@@ -172,11 +172,26 @@ fn render_runtime_chunk_import(
 fn render_raw_import_stmts(
   compilation: &Compilation,
   chunk_link: &ChunkLinkContext,
-  should_skip: impl Fn(&RawImportSource, &ImportSpec) -> bool,
+  runtime_chunk_ukey: Option<&ChunkUkey>,
+  runtime_import_match_idents: &FxIndexSet<String>,
+  legacy_context_idents: Option<&FxIndexSet<String>>,
 ) -> ConcatSource {
   let mut source = ConcatSource::default();
   for (raw_import_source, import_spec) in &chunk_link.raw_import_stmts {
-    if should_skip(raw_import_source, import_spec) {
+    let should_skip = match raw_import_source {
+      RawImportSource::Chunk(import_chunk) => {
+        runtime_chunk_ukey == Some(import_chunk)
+          && legacy_context_idents
+            .is_some_and(|idents| import_spec_imports_any(import_spec, idents))
+      }
+      RawImportSource::Source((request, _)) if request.contains("__RSPACK_ESM_CHUNK_") => {
+        import_spec_imports_any(import_spec, runtime_import_match_idents)
+          || legacy_context_idents
+            .is_some_and(|idents| import_spec_imports_any(import_spec, idents))
+      }
+      _ => false,
+    };
+    if should_skip {
       continue;
     }
 

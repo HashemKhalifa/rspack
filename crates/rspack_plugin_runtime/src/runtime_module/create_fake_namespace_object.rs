@@ -7,7 +7,7 @@ static CREATE_FAKE_NAMESPACE_OBJECT_TEMPLATE: &str =
   include_str!("runtime/create_fake_namespace_object.ejs");
 const RUNTIME_MODULE_VARIABLES: &[&str] = &["getProto", "leafPrototypes"];
 
-#[impl_runtime_module]
+#[impl_runtime_module(runtime_module_variables)]
 #[derive(Debug)]
 pub struct CreateFakeNamespaceObjectRuntimeModule {}
 

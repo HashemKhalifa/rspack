@@ -7,7 +7,7 @@ use rspack_util::json_stringify_str;
 
 const ESM_CHUNK_LOADING_RUNTIME_MODULE_VARIABLES: &[&str] = &["esmInstalledChunks", "esmChunkMap"];
 
-#[impl_runtime_module]
+#[impl_runtime_module(runtime_module_variables)]
 #[derive(Debug)]
 pub(crate) struct EsmRegisterModuleRuntimeModule {}
 
