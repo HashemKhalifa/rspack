@@ -2639,7 +2639,7 @@ export interface RawManifestSharedOption {
   name: string
   version?: string
   requiredVersion?: string
-  shareScope: string | Array<string>
+  shareScope?: string | Array<string>
   layer?: string
   singleton?: boolean
 }
@@ -2780,10 +2780,10 @@ export interface RawOptimizationOptions {
 }
 
 export interface RawOptimizeSharedConfig {
-  request: string
+  request?: string
   issuerLayer?: string
   shareKey: string
-  shareScope: string | Array<string>
+  shareScope?: string | Array<string>
   treeShaking: boolean
   usedExports?: Array<string>
   layer?: string
@@ -3055,6 +3055,9 @@ export interface RawSharedContainerPluginOptions {
   name: string
   request: string
   version: string
+  shareKey?: string
+  shareScope?: string | Array<string>
+  layer?: string
   fileName?: string
   library: JsLibraryOptions
 }

@@ -18,11 +18,18 @@ import {
   resolveShareScope,
 } from './utils';
 
-export type ConsumeSharedPluginOptions<Enhanced extends boolean = boolean> = {
+type ConsumeSharedPluginBaseOptions<Enhanced extends boolean> = {
   consumes: Consumes<Enhanced>;
   shareScope?: ShareScope;
-  enhanced?: Enhanced;
 };
+export type ConsumeSharedPluginOptions<Enhanced extends boolean = boolean> = [
+  Enhanced,
+] extends [true]
+  ? ConsumeSharedPluginBaseOptions<true> & { enhanced: true }
+  : [Enhanced] extends [false]
+    ? ConsumeSharedPluginBaseOptions<false> & { enhanced?: false }
+    : | (ConsumeSharedPluginBaseOptions<false> & { enhanced?: false })
+      | (ConsumeSharedPluginBaseOptions<true> & { enhanced: true });
 export type Consumes<Enhanced extends boolean = boolean> =
   (ConsumesItem | ConsumesObject<Enhanced>)[] | ConsumesObject<Enhanced>;
 export type ConsumesItem = string;
@@ -45,8 +52,11 @@ type ConsumesEnhancedConfig = ConsumesV1Config & {
   layer?: string;
   request?: string;
 };
-export type ConsumesConfig<Enhanced extends boolean = boolean> =
-  Enhanced extends true ? ConsumesEnhancedConfig : ConsumesV1Config;
+export type ConsumesConfig<Enhanced extends boolean = boolean> = [
+  Enhanced,
+] extends [true]
+  ? ConsumesEnhancedConfig
+  : ConsumesV1Config;
 
 export function normalizeConsumeShareOptions<
   Enhanced extends boolean = boolean,

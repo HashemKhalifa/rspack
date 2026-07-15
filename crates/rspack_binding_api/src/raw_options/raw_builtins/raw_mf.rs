@@ -139,6 +139,7 @@ impl From<RawProvideOptions> for (String, ProvideOptions) {
     (
       value.key,
       ProvideOptions {
+        config_id: 0,
         request: value.request,
         layer: value.layer,
         share_key: value.share_key,
@@ -183,16 +184,26 @@ pub struct RawSharedContainerPluginOptions {
   pub name: String,
   pub request: String,
   pub version: String,
+  pub share_key: Option<String>,
+  pub share_scope: Option<Either<String, Vec<String>>>,
+  pub layer: Option<String>,
   pub file_name: Option<String>,
   pub library: JsLibraryOptions,
 }
 
 impl From<RawSharedContainerPluginOptions> for SharedContainerPluginOptions {
   fn from(value: RawSharedContainerPluginOptions) -> Self {
+    let share_key = value.share_key.unwrap_or_else(|| value.name.clone());
     SharedContainerPluginOptions {
       name: value.name,
       request: value.request,
       version: value.version,
+      share_key,
+      share_scope: value
+        .share_scope
+        .map(into_share_scope)
+        .unwrap_or_else(|| ShareScope::Single("default".to_string())),
+      layer: value.layer,
       library: value.library.into(),
       file_name: value.file_name.map(Into::into),
     }
@@ -223,10 +234,10 @@ impl From<RawConsumeSharedPluginOptions> for ConsumeSharedPluginOptions {
 #[derive(Debug)]
 #[napi(object)]
 pub struct RawOptimizeSharedConfig {
-  pub request: String,
+  pub request: Option<String>,
   pub issuer_layer: Option<String>,
   pub share_key: String,
-  pub share_scope: Either<String, Vec<String>>,
+  pub share_scope: Option<Either<String, Vec<String>>>,
   pub tree_shaking: bool,
   pub used_exports: Option<Vec<String>>,
   pub layer: Option<String>,
@@ -234,11 +245,15 @@ pub struct RawOptimizeSharedConfig {
 
 impl From<RawOptimizeSharedConfig> for OptimizeSharedConfig {
   fn from(value: RawOptimizeSharedConfig) -> Self {
+    let request = value.request.unwrap_or_else(|| value.share_key.clone());
     Self {
-      request: value.request,
+      request,
       issuer_layer: value.issuer_layer,
       share_key: value.share_key,
-      share_scope: into_share_scope(value.share_scope),
+      share_scope: value
+        .share_scope
+        .map(into_share_scope)
+        .unwrap_or_else(|| ShareScope::Single("default".to_string())),
       tree_shaking: value.tree_shaking,
       used_exports: value.used_exports.unwrap_or_default(),
       layer: value.layer,
@@ -394,7 +409,7 @@ pub struct RawManifestSharedOption {
   pub name: String,
   pub version: Option<String>,
   pub required_version: Option<String>,
-  pub share_scope: Either<String, Vec<String>>,
+  pub share_scope: Option<Either<String, Vec<String>>>,
   pub layer: Option<String>,
   pub singleton: Option<bool>,
 }
@@ -465,7 +480,10 @@ impl From<RawModuleFederationManifestPluginOptions> for ModuleFederationManifest
           name: shared.name,
           version: shared.version,
           required_version: shared.required_version,
-          share_scope: into_share_scope(shared.share_scope),
+          share_scope: shared
+            .share_scope
+            .map(into_share_scope)
+            .unwrap_or_else(|| ShareScope::Single("default".to_string())),
           layer: shared.layer,
           singleton: shared.singleton,
         })

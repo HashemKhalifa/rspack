@@ -4,6 +4,7 @@ import type { ModuleFederationPluginOptions } from '../container/ModuleFederatio
 import {
   IndependentSharedPlugin,
   type ShareFallback,
+  type ShareFallbackVariants,
 } from './IndependentSharedPlugin';
 import { SharedUsedExportsOptimizerPlugin } from './SharedUsedExportsOptimizerPlugin';
 import { normalizeSharedOptions } from './SharePlugin';
@@ -13,14 +14,20 @@ const require = createRequire(import.meta.url);
 export interface TreeshakingSharedPluginOptions {
   mfConfig: ModuleFederationPluginOptions;
   secondary?: boolean;
-  onBuildAssets?: (buildAssets: ShareFallback) => void;
+  onBuildAssets?: (
+    buildAssets: ShareFallback,
+    variants: ShareFallbackVariants,
+  ) => void;
 }
 
 export class TreeShakingSharedPlugin {
   mfConfig: ModuleFederationPluginOptions;
   outputDir: string;
   secondary?: boolean;
-  onBuildAssets?: (buildAssets: ShareFallback) => void;
+  onBuildAssets?: (
+    buildAssets: ShareFallback,
+    variants: ShareFallbackVariants,
+  ) => void;
   private _independentSharePlugin?: IndependentSharedPlugin;
 
   name = 'TreeShakingSharedPlugin';

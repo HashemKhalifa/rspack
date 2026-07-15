@@ -31,13 +31,13 @@ use rspack_error::Result;
 use rspack_hook::{plugin, plugin_hook};
 use rspack_util::fx_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use utils::{
-  collect_entry_files, collect_expose_requirements, compose_id_with_separator, compose_shared_id,
-  ensure_configured_remotes, ensure_shared_entry, filter_assets, is_hot_file, manifest_share_scope,
-  record_shared_usage, strip_ext,
+  ExposeIdentity, collect_entry_files, collect_expose_requirements, compose_id_with_separator,
+  compose_shared_id, ensure_configured_remotes, ensure_shared_entry, filter_assets,
+  finalize_shared_ids, is_hot_file, manifest_share_scope, record_shared_usage, strip_ext,
 };
 
 use crate::{
-  ConsumeSharedModule, ConsumeVersion, ProvideSharedModule, SharedIdentity,
+  ConsumeSharedModule, ConsumeVersion, ProvideSharedModule, ShareScope, SharedIdentity,
   container::{container_entry_module::ContainerEntryModule, remote_module::RemoteModule},
 };
 
@@ -218,7 +218,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
     },
     r#type: None,
   };
-  let (exposes, shared, remote_list) = if self.options.disable_assets_analyze {
+  let (mut exposes, mut shared, remote_list) = if self.options.disable_assets_analyze {
     let exposes = self
       .options
       .exposes
@@ -232,6 +232,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
           name: expose_name,
           layer: expose.layer.clone(),
           requires: Vec::new(),
+          required_shared: Vec::new(),
           assets: StatsAssetsGroup::default(),
         }
       })
@@ -245,6 +246,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
           SharedIdentity::new(&shared.share_scope, &shared.name, shared.layer.as_deref());
         StatsShared {
           id: compose_shared_id(&container_name, &identity),
+          identity_id: None,
           name: shared.name.clone(),
           version: shared.version.clone().unwrap_or_default(),
           requiredVersion: shared.required_version.clone(),
@@ -292,9 +294,11 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
         })
     };
 
-    let mut exposes_map: HashMap<String, StatsExpose> = HashMap::default();
-    let mut expose_chunk_keys: HashMap<String, rspack_core::ChunkUkey> = HashMap::default();
-    let mut expose_fallback_chunk_keys: HashMap<String, rspack_core::ChunkUkey> =
+    let mut exposes_map: HashMap<ExposeIdentity, StatsExpose> = HashMap::default();
+    let mut expose_imports: HashMap<ExposeIdentity, String> = HashMap::default();
+    let mut expose_identities_by_import: HashMap<String, Vec<ExposeIdentity>> = HashMap::default();
+    let mut expose_chunk_keys: HashMap<ExposeIdentity, rspack_core::ChunkUkey> = HashMap::default();
+    let mut expose_fallback_chunk_keys: HashMap<ExposeIdentity, rspack_core::ChunkUkey> =
       HashMap::default();
     let mut shared_map: HashMap<SharedIdentity, StatsShared> = HashMap::default();
     let mut shared_usage_links: Vec<(SharedIdentity, String)> = Vec::new();
@@ -361,15 +365,25 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
           };
           let id_comp = compose_id_with_separator(&container_name, &expose_name);
           let expose_file_key = strip_ext(import);
-          exposes_map
+          let expose_layer = options.layer.as_ref().map(ToString::to_string);
+          let expose_identity = ExposeIdentity::new(expose_key, expose_layer.as_deref());
+          expose_imports.insert(expose_identity.clone(), expose_file_key.clone());
+          let expose_identities = expose_identities_by_import
             .entry(expose_file_key.clone())
+            .or_default();
+          if !expose_identities.contains(&expose_identity) {
+            expose_identities.push(expose_identity.clone());
+          }
+          exposes_map
+            .entry(expose_identity.clone())
             .or_insert(StatsExpose {
               path: expose_key.clone(),
               file: String::new(),
               id: id_comp,
               name: expose_name.clone(),
-              layer: options.layer.as_ref().map(ToString::to_string),
+              layer: expose_layer,
               requires: Vec::new(),
+              required_shared: Vec::new(),
               assets: StatsAssetsGroup::default(),
             });
 
@@ -408,7 +422,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
                 })
               })
             {
-              expose_chunk_keys.insert(expose_file_key.clone(), *chunk_key);
+              expose_chunk_keys.insert(expose_identity.clone(), *chunk_key);
             }
 
             if let Some(chunk_key) = chunk_group.chunks.iter().find(|chunk_key| {
@@ -419,7 +433,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
                 .and_then(|chunk| chunk.name())
                 .is_some()
             }) {
-              expose_fallback_chunk_keys.insert(expose_file_key, *chunk_key);
+              expose_fallback_chunk_keys.insert(expose_identity, *chunk_key);
             }
           }
         }
@@ -524,13 +538,13 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
       }
     }
 
-    let mut expose_module_paths: HashMap<String, String> = HashMap::default();
-    for expose_key in exposes_map.keys() {
-      if let Some(module_id) = module_ids_by_name.get(expose_key)
+    let mut expose_module_paths: HashMap<ExposeIdentity, String> = HashMap::default();
+    for (expose_identity, expose_import) in &expose_imports {
+      if let Some(module_id) = module_ids_by_name.get(expose_import)
         && let Some(module) = module_graph.module_by_identifier(module_id)
         && let Some(path) = module_source_path(module, compilation)
       {
-        expose_module_paths.insert(expose_key.clone(), path);
+        expose_module_paths.insert(expose_identity.clone(), path);
       }
     }
 
@@ -539,6 +553,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
       &mut shared_map,
       &mut exposes_map,
       shared_usage_links_for_requirements,
+      &expose_identities_by_import,
       &expose_module_paths,
     );
     let chunk_graph = &compilation.build_chunk_graph_artifact.chunk_graph;
@@ -595,9 +610,12 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
       }
     }
 
-    for (expose_file_key, expose) in exposes_map.iter_mut() {
+    for (expose_identity, expose) in exposes_map.iter_mut() {
+      let Some(expose_file_key) = expose_imports.get(expose_identity) else {
+        continue;
+      };
       let mut assets = None;
-      if let Some(chunk_key) = expose_chunk_keys.get(expose_file_key) {
+      if let Some(chunk_key) = expose_chunk_keys.get(expose_identity) {
         assets = Some(collect_assets_from_chunk(
           compilation,
           chunk_key,
@@ -622,7 +640,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
         assets = collect_assets_for_module(compilation, module_id, &entry_files);
       }
       if assets.is_none()
-        && let Some(chunk_key) = expose_fallback_chunk_keys.get(expose_file_key)
+        && let Some(chunk_key) = expose_fallback_chunk_keys.get(expose_identity)
       {
         assets = Some(collect_assets_from_chunk(
           compilation,
@@ -631,7 +649,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
         ));
       }
       let mut assets = assets.unwrap_or_else(empty_assets_group);
-      if let Some(path) = expose_module_paths.get(expose_file_key) {
+      if let Some(path) = expose_module_paths.get(expose_identity) {
         expose.file = path.clone();
       }
       // Remove main entry files from assets
@@ -723,7 +741,24 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
       });
     }
 
-    let exposes = exposes_map.values().cloned().collect::<Vec<_>>();
+    let exposes = exposes_map
+      .into_values()
+      .map(|mut expose| {
+        expose.requires.sort();
+        expose.required_shared.sort_by(|a, b| {
+          a.name
+            .cmp(&b.name)
+            .then_with(|| a.layer.cmp(&b.layer))
+            .then_with(|| {
+              a.share_scope
+                .as_ref()
+                .map(ShareScope::identifier_key)
+                .cmp(&b.share_scope.as_ref().map(ShareScope::identifier_key))
+            })
+        });
+        expose
+      })
+      .collect::<Vec<_>>();
     let shared = shared_map
       .into_values()
       .map(|mut v| {
@@ -734,6 +769,9 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
       .collect::<Vec<_>>();
     (exposes, shared, remote_list)
   };
+  finalize_shared_ids(&mut shared, &container_name);
+  exposes.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.layer.cmp(&b.layer)));
+  shared.sort_by(|a, b| a.id.cmp(&b.id));
   // Ensure all configured remotes exist in stats, add missing with defaults
   let mut remote_list = remote_list;
   ensure_configured_remotes(
@@ -776,6 +814,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
         name: e.name,
         path: e.path,
         layer: e.layer,
+        required_shared: e.required_shared,
         assets: e.assets,
       })
       .collect(),
@@ -786,6 +825,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
         let used_exports = s.usedExports;
         ManifestShared {
           id: s.id,
+          identity_id: s.identity_id,
           name: s.name,
           version: s.version,
           requiredVersion: s.requiredVersion,

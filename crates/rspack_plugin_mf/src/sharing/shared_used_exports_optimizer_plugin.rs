@@ -28,25 +28,6 @@ use crate::{
   manifest::{ManifestRoot, StatsRoot},
 };
 
-fn resolve_unique_shared_identity(
-  shared_map: &FxHashMap<SharedIdentity, SharedEntryData>,
-  share_key: &str,
-  layer: Option<&str>,
-) -> Option<SharedIdentity> {
-  let mut matches = shared_map
-    .keys()
-    .filter(|identity| {
-      identity.share_key == share_key
-        && (identity.layer.as_deref() == layer || identity.layer.is_none())
-    })
-    .cloned();
-  let first = matches.next()?;
-  if matches.next().is_none() {
-    return Some(first);
-  }
-  None
-}
-
 fn shared_identity_from_output(
   share_key: &str,
   share_scope: Option<&ShareScope>,
@@ -84,7 +65,7 @@ struct SharedEntryData {
 #[derive(Debug, Clone)]
 pub struct SharedUsedExportsOptimizerPlugin {
   shared_map: FxHashMap<SharedIdentity, SharedEntryData>,
-  request_map: FxHashMap<RequestMatchKey, SharedIdentity>,
+  request_map: FxHashMap<RequestMatchKey, Vec<SharedIdentity>>,
   shared_referenced_exports: Arc<RwLock<FxHashMap<SharedIdentity, FxHashSet<String>>>>,
   inject_tree_shaking_used_exports: bool,
   stats_file_name: Option<String>,
@@ -94,7 +75,7 @@ pub struct SharedUsedExportsOptimizerPlugin {
 impl SharedUsedExportsOptimizerPlugin {
   pub fn new(options: SharedUsedExportsOptimizerPluginOptions) -> Self {
     let mut shared_map = FxHashMap::default();
-    let mut request_map = FxHashMap::default();
+    let mut request_map: FxHashMap<RequestMatchKey, Vec<SharedIdentity>> = FxHashMap::default();
     let inject_tree_shaking_used_exports = options.inject_tree_shaking_used_exports;
     for config in options.shared.into_iter().filter(|c| c.tree_shaking) {
       let atoms = config
@@ -107,10 +88,15 @@ impl SharedUsedExportsOptimizerPlugin {
         &config.share_key,
         config.layer.as_deref(),
       );
-      request_map.insert(
-        RequestMatchKey::new(&config.request, config.issuer_layer.as_deref()),
-        identity.clone(),
-      );
+      let identities = request_map
+        .entry(RequestMatchKey::new(
+          &config.request,
+          config.issuer_layer.as_deref(),
+        ))
+        .or_default();
+      if !identities.contains(&identity) {
+        identities.push(identity.clone());
+      }
       shared_map.insert(
         identity,
         SharedEntryData {
@@ -235,11 +221,7 @@ async fn optimize_dependencies(
               share_container_entry_module.get_dependencies(),
               &mut modules_to_process,
             );
-            resolve_unique_shared_identity(
-              &self.shared_map,
-              share_container_entry_module.name(),
-              module.get_layer().map(|layer| layer.as_str()),
-            )?
+            share_container_entry_module.shared_identity()?.clone()
           }
           _ => return None,
         };
@@ -469,13 +451,16 @@ fn dependency_referenced_exports(
     .and_then(|identifier| module_graph.module_by_identifier(identifier))
     .and_then(|module| module.get_layer())
     .map(|layer| layer.as_str());
-  let Some(shared_identity) = find_exact_match(&self.request_map, request, issuer_layer).cloned()
+  let Some(shared_identities) = find_exact_match(&self.request_map, request, issuer_layer).cloned()
   else {
     return Ok(());
   };
 
-  // Check if dependency type is EsmImportSpecifier and share_key is in shared_map
-  if !self.shared_map.contains_key(&shared_identity) {
+  let shared_identities = shared_identities
+    .into_iter()
+    .filter(|identity| self.shared_map.contains_key(identity))
+    .collect::<Vec<_>>();
+  if shared_identities.is_empty() {
     return Ok(());
   }
   let mut final_exports = exports.clone();
@@ -496,7 +481,9 @@ fn dependency_referenced_exports(
       .shared_referenced_exports
       .write()
       .expect("lock poisoned");
-    shared_referenced_exports.remove(&shared_identity);
+    for shared_identity in &shared_identities {
+      shared_referenced_exports.remove(shared_identity);
+    }
     return Ok(());
   }
   if (final_exports.is_empty() || is_exports_object)
@@ -523,12 +510,11 @@ fn dependency_referenced_exports(
     }
   }
 
-  // Process each referenced export
-  if self.shared_map.contains_key(&shared_identity) {
-    let mut shared_referenced_exports = self
-      .shared_referenced_exports
-      .write()
-      .expect("lock poisoned");
+  let mut shared_referenced_exports = self
+    .shared_referenced_exports
+    .write()
+    .expect("lock poisoned");
+  for shared_identity in shared_identities {
     let export_set = shared_referenced_exports
       .entry(shared_identity)
       .or_default();
@@ -597,8 +583,8 @@ mod tests {
     let plugin = SharedUsedExportsOptimizerPlugin::new(SharedUsedExportsOptimizerPluginOptions {
       shared: vec![
         OptimizeSharedConfig {
-          request: "pkg-a".to_string(),
-          issuer_layer: None,
+          request: "pkg".to_string(),
+          issuer_layer: Some("issuer".to_string()),
           share_key: "pkg".to_string(),
           share_scope: ShareScope::Single("scope-a".to_string()),
           layer: Some("server".to_string()),
@@ -606,8 +592,8 @@ mod tests {
           used_exports: vec!["a".to_string()],
         },
         OptimizeSharedConfig {
-          request: "pkg-b".to_string(),
-          issuer_layer: None,
+          request: "pkg".to_string(),
+          issuer_layer: Some("issuer".to_string()),
           share_key: "pkg".to_string(),
           share_scope: ShareScope::Single("scope-b".to_string()),
           layer: Some("server".to_string()),
@@ -621,6 +607,7 @@ mod tests {
     });
 
     assert_eq!(plugin.shared_map.len(), 2);
-    assert_eq!(plugin.request_map.len(), 2);
+    assert_eq!(plugin.request_map.len(), 1);
+    assert_eq!(plugin.request_map.values().next().map(Vec::len), Some(2));
   }
 }

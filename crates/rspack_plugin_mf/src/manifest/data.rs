@@ -41,13 +41,30 @@ pub struct StatsExpose {
   pub layer: Option<String>,
   #[serde(default)]
   pub requires: Vec<String>,
+  #[serde(
+    default,
+    rename = "requiredShared",
+    skip_serializing_if = "Vec::is_empty"
+  )]
+  pub required_shared: Vec<StatsSharedRequirement>,
   #[serde(default)]
   pub assets: StatsAssetsGroup,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct StatsSharedRequirement {
+  pub name: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub layer: Option<String>,
+  #[serde(rename = "shareScope", skip_serializing_if = "Option::is_none")]
+  pub share_scope: Option<ShareScope>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StatsShared {
   pub id: String,
+  #[serde(rename = "identityId", skip_serializing_if = "Option::is_none")]
+  pub identity_id: Option<String>,
   pub name: String,
   pub version: String,
   #[serde(default)]
@@ -122,12 +139,20 @@ pub struct ManifestExpose {
   pub path: String,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub layer: Option<String>,
+  #[serde(
+    default,
+    rename = "requiredShared",
+    skip_serializing_if = "Vec::is_empty"
+  )]
+  pub required_shared: Vec<StatsSharedRequirement>,
   pub assets: StatsAssetsGroup,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ManifestShared {
   pub id: String,
+  #[serde(rename = "identityId", skip_serializing_if = "Option::is_none")]
+  pub identity_id: Option<String>,
   pub name: String,
   pub version: String,
   #[serde(default)]

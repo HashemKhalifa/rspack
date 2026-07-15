@@ -12,6 +12,7 @@ import type { Compiler } from '../Compiler';
 import { normalizeConsumeShareOptions } from './ConsumeSharedPlugin';
 import {
   createConsumeShareOptions,
+  normalizeShareScope,
   type NormalizedSharedOptions,
   type ShareScope,
 } from './SharePlugin';
@@ -40,13 +41,19 @@ const READ_COLLECTED_SHARED_ENTRY_STAGE = 101;
 export class CollectSharedEntryPlugin extends RspackBuiltinPlugin {
   name = BuiltinPluginName.CollectSharedEntryPlugin;
   sharedOptions: NormalizedSharedOptions;
+  shareScope: ShareScope;
   private _collectedEntries: ShareRequestsMap;
 
   constructor(options: CollectSharedEntryPluginOptions) {
     super();
-    const { sharedOptions } = options;
+    const { sharedOptions, shareScope = 'default' } = options;
 
     this.sharedOptions = sharedOptions;
+    this.shareScope = normalizeShareScope(
+      shareScope,
+      true,
+      'CollectSharedEntryPlugin',
+    );
     this._collectedEntries = {};
   }
 
@@ -86,7 +93,7 @@ export class CollectSharedEntryPlugin extends RspackBuiltinPlugin {
     );
     const normalizedConsumeShareOptions = normalizeConsumeShareOptions(
       consumeShareOptions,
-      undefined,
+      this.shareScope,
       true,
     );
     const rawOptions: RawCollectShareEntryPluginOptions = {

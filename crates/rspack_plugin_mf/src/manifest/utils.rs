@@ -4,12 +4,27 @@ use rspack_core::{Compilation, ModuleGraph, ModuleIdentifier};
 use rspack_util::fx_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use super::{
-  data::{StatsAssetsGroup, StatsExpose, StatsRemote, StatsShared},
+  data::{StatsAssetsGroup, StatsExpose, StatsRemote, StatsShared, StatsSharedRequirement},
   options::RemoteAliasTarget,
 };
 use crate::{ShareScope, SharedIdentity};
 
 const HOT_UPDATE_SUFFIX: &str = ".hot-update";
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ExposeIdentity {
+  pub(crate) path: String,
+  pub(crate) layer: Option<String>,
+}
+
+impl ExposeIdentity {
+  pub(crate) fn new(path: &str, layer: Option<&str>) -> Self {
+    Self {
+      path: path.to_string(),
+      layer: layer.map(str::to_string),
+    }
+  }
+}
 
 pub fn ensure_configured_remotes(
   remote_list: &mut Vec<StatsRemote>,
@@ -134,15 +149,51 @@ pub fn compose_id_with_separator(container: &str, name: &str) -> String {
   format!("{container}:{name}")
 }
 
+fn compose_structural_shared_id(container: &str, identity: &SharedIdentity) -> String {
+  compose_id_with_separator(container, &format!("shared:{}", identity.identifier_key()))
+}
+
 pub fn compose_shared_id(container: &str, identity: &SharedIdentity) -> String {
-  if matches!(
-    &identity.share_scope,
-    ShareScope::Single(scope) if scope == "default"
-  ) && identity.layer.is_none()
-  {
+  if matches!(&identity.share_scope, ShareScope::Single(_)) && identity.layer.is_none() {
     compose_id_with_separator(container, &identity.share_key)
   } else {
-    compose_id_with_separator(container, &format!("shared:{}", identity.identifier_key()))
+    compose_structural_shared_id(container, identity)
+  }
+}
+
+pub fn finalize_shared_ids(shared: &mut [StatsShared], container_name: &str) {
+  let mut scalar_scopes: HashMap<String, HashSet<ShareScope>> = HashMap::default();
+  for entry in shared.iter().filter(|entry| entry.layer.is_none()) {
+    let share_scope = entry
+      .share_scope
+      .clone()
+      .unwrap_or_else(|| ShareScope::Single("default".to_string()));
+    if matches!(share_scope, ShareScope::Single(_)) {
+      scalar_scopes
+        .entry(entry.name.clone())
+        .or_default()
+        .insert(share_scope);
+    }
+  }
+
+  for entry in shared {
+    let share_scope = entry
+      .share_scope
+      .clone()
+      .unwrap_or_else(|| ShareScope::Single("default".to_string()));
+    let identity = SharedIdentity::new(&share_scope, &entry.name, entry.layer.as_deref());
+    let has_scope_collision = scalar_scopes
+      .get(&entry.name)
+      .is_some_and(|scopes| scopes.len() > 1);
+    entry.id = compose_shared_id(container_name, &identity);
+    entry.identity_id = if has_scope_collision
+      && entry.layer.is_none()
+      && matches!(share_scope, ShareScope::Single(_))
+    {
+      Some(compose_structural_shared_id(container_name, &identity))
+    } else {
+      None
+    };
   }
 }
 
@@ -175,6 +226,7 @@ pub fn ensure_shared_entry<'a>(
     .entry(identity.clone())
     .or_insert_with(|| StatsShared {
       id: compose_shared_id(container_name, identity),
+      identity_id: None,
       name: identity.share_key.clone(),
       version: String::new(),
       requiredVersion: None,
@@ -242,19 +294,46 @@ pub fn record_shared_usage(
 
 pub fn collect_expose_requirements(
   shared_map: &mut HashMap<SharedIdentity, StatsShared>,
-  exposes_map: &mut HashMap<String, StatsExpose>,
+  exposes_map: &mut HashMap<ExposeIdentity, StatsExpose>,
   links: Vec<(SharedIdentity, String)>,
-  expose_module_paths: &HashMap<String, String>,
+  expose_identities_by_import: &HashMap<String, Vec<ExposeIdentity>>,
+  expose_module_paths: &HashMap<ExposeIdentity, String>,
 ) {
-  for (identity, expose_key) in links {
-    if let Some(expose) = exposes_map.get_mut(&expose_key)
-      && let Some(shared) = shared_map.get_mut(&identity)
-    {
+  for (identity, expose_import) in links {
+    let identity_count = shared_map
+      .keys()
+      .filter(|candidate| candidate.share_key == identity.share_key)
+      .count();
+    let Some(shared) = shared_map.get_mut(&identity) else {
+      continue;
+    };
+    let Some(expose_identities) = expose_identities_by_import.get(&expose_import) else {
+      continue;
+    };
+    let required_shared = StatsSharedRequirement {
+      name: identity.share_key.clone(),
+      layer: identity.layer.clone(),
+      share_scope: manifest_share_scope(&identity),
+    };
+    let emit_structured_requirement = identity_count > 1
+      || required_shared.layer.is_some()
+      || required_shared.share_scope.is_some();
+
+    for expose_identity in expose_identities {
+      if identity.layer.is_some() && expose_identity.layer != identity.layer {
+        continue;
+      }
+      let Some(expose) = exposes_map.get_mut(expose_identity) else {
+        continue;
+      };
       if !expose.requires.contains(&shared.name) {
         expose.requires.push(shared.name.clone());
       }
+      if emit_structured_requirement && !expose.required_shared.contains(&required_shared) {
+        expose.required_shared.push(required_shared.clone());
+      }
       let target = expose_module_paths
-        .get(&expose_key)
+        .get(expose_identity)
         .cloned()
         .unwrap_or_else(|| expose.path.clone());
       shared.usedIn.push(target);
@@ -264,11 +343,30 @@ pub fn collect_expose_requirements(
 
 #[cfg(test)]
 mod tests {
-  use super::compose_shared_id;
-  use crate::{ShareScope, SharedIdentity};
+  use super::{compose_shared_id, finalize_shared_ids};
+  use crate::{
+    ShareScope, SharedIdentity,
+    manifest::data::{StatsAssetsGroup, StatsShared},
+  };
+
+  fn stats_shared(name: &str, share_scope: Option<ShareScope>) -> StatsShared {
+    StatsShared {
+      id: String::new(),
+      identity_id: None,
+      name: name.to_string(),
+      version: String::new(),
+      requiredVersion: None,
+      layer: None,
+      share_scope,
+      singleton: Some(true),
+      assets: StatsAssetsGroup::default(),
+      usedIn: Vec::new(),
+      usedExports: Vec::new(),
+    }
+  }
 
   #[test]
-  fn shared_ids_preserve_legacy_default_and_distinguish_new_identities() {
+  fn shared_ids_preserve_legacy_scalar_and_distinguish_new_identities() {
     let default = SharedIdentity::new(&ShareScope::Single("default".to_string()), "react", None);
     let scoped = SharedIdentity::new(&ShareScope::Single("server".to_string()), "react", None);
     let layered = SharedIdentity::new(
@@ -278,10 +376,39 @@ mod tests {
     );
 
     assert_eq!(compose_shared_id("app", &default), "app:react");
-    assert_ne!(compose_shared_id("app", &scoped), "app:react");
+    assert_eq!(compose_shared_id("app", &scoped), "app:react");
     assert_ne!(
       compose_shared_id("app", &scoped),
       compose_shared_id("app", &layered)
     );
+  }
+
+  #[test]
+  fn scalar_scope_collisions_keep_legacy_ids_and_add_structural_identity_ids() {
+    let mut shared = vec![
+      stats_shared("react", Some(ShareScope::Single("client".to_string()))),
+      stats_shared("react", Some(ShareScope::Single("server".to_string()))),
+      stats_shared("vue", Some(ShareScope::Single("server".to_string()))),
+    ];
+
+    finalize_shared_ids(&mut shared, "app");
+
+    assert_eq!(shared[0].id, "app:react");
+    assert_eq!(shared[1].id, "app:react");
+    assert_ne!(shared[0].identity_id, shared[1].identity_id);
+    assert!(
+      shared[0]
+        .identity_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with("app:shared:"))
+    );
+    assert!(
+      shared[1]
+        .identity_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with("app:shared:"))
+    );
+    assert_eq!(shared[2].id, "app:vue");
+    assert_eq!(shared[2].identity_id, None);
   }
 }

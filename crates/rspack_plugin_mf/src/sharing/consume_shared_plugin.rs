@@ -244,7 +244,7 @@ impl ConsumeSharedPlugin {
     } else {
       let package_name = if let Some(name) = &config.package_name {
         Some(name.as_str())
-      } else if ABSOLUTE_REQUEST.is_match(request) {
+      } else if RELATIVE_REQUEST.is_match(request) || ABSOLUTE_REQUEST.is_match(request) {
         return None;
       } else if let Some(caps) = PACKAGE_NAME.captures(request)
         && let Some(mat) = caps.get(0)
