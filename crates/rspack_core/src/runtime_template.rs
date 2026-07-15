@@ -225,6 +225,7 @@ impl RuntimeTemplate {
   ) -> Self {
     let runtime_globals = get_runtime_globals_render_map(render_mode.runtime_module_render_mode());
     let mut dojang = Dojang::new();
+    register_runtime_module_declaration_functions(&mut dojang);
 
     let runtime_globals_cloned = runtime_globals.clone();
     let compiler_options_cloned = compiler_options.clone();
@@ -572,6 +573,21 @@ fn dojang_empty_function(compiler_options: &Arc<CompilerOptions>) -> Operand {
   } else {
     Operand::Value(Value::from("function() {}"))
   }
+}
+
+fn register_runtime_module_declaration_functions(dojang: &mut Dojang) {
+  dojang.functions.insert(
+    "var".into(),
+    FunctionContainer::F1(Box::new(|name: Operand| {
+      Operand::Value(Value::from(format!("var {}", String::from(name))))
+    })),
+  );
+  dojang.functions.insert(
+    "fn".into(),
+    FunctionContainer::F1(Box::new(|name: Operand| {
+      Operand::Value(Value::from(format!("function {}", String::from(name))))
+    })),
+  );
 }
 
 fn dojang_array_destructure(
@@ -1921,5 +1937,39 @@ impl RuntimeCodeTemplate {
 }}"#
       )
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{Dojang, FunctionContainer, Operand, Value};
+
+  fn call_declaration_function(dojang: &Dojang, name: &str, variable: &str) -> String {
+    let function = dojang.functions.get(name).expect("function should exist");
+    let FunctionContainer::F1(function) = function else {
+      panic!("declaration function should take one argument");
+    };
+    let Operand::Value(value) = function(Operand::Value(Value::from(variable))) else {
+      panic!("declaration function should return a string");
+    };
+    value
+      .as_str()
+      .expect("declaration function should return a string")
+      .to_string()
+  }
+
+  #[test]
+  fn runtime_module_declaration_functions_render_javascript_declarations() {
+    let mut dojang = Dojang::new();
+    super::register_runtime_module_declaration_functions(&mut dojang);
+
+    assert_eq!(
+      call_declaration_function(&dojang, "var", "installedChunks"),
+      "var installedChunks"
+    );
+    assert_eq!(
+      call_declaration_function(&dojang, "fn", "installChunk"),
+      "function installChunk"
+    );
   }
 }

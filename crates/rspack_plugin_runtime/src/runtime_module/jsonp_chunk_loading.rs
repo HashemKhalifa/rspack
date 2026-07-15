@@ -10,25 +10,11 @@ use rspack_plugin_javascript::impl_plugin_for_js_plugin::chunk_has_js;
 use super::generate_javascript_hmr_runtime;
 use crate::{
   LinkPrefetchData, LinkPreloadData, RuntimePlugin, extract_runtime_globals_from_ejs,
-  get_chunk_runtime_requirements,
+  extract_runtime_module_variables_from_ejs, get_chunk_runtime_requirements,
   runtime_module::utils::{
     get_initial_chunk_ids, render_hmr_runtime_state_expression, stringify_chunks,
   },
 };
-
-const RUNTIME_MODULE_VARIABLES: &[&str] = &[
-  "jsonpInstalledChunks",
-  "__rspack_jsonp",
-  "jsonpChunkLoadingGlobal",
-  "hotCurrentUpdatedModulesList",
-  "hotWaitingUpdateResolves",
-  "jsonpLoadUpdateChunk",
-  "hotCurrentUpdateChunks",
-  "hotCurrentUpdate",
-  "hotCurrentUpdateRemovedChunks",
-  "hotCurrentUpdateRuntime",
-  "hotApplyHandler",
-];
 
 static JSONP_CHUNK_LOADING_TEMPLATE: &str = include_str!("runtime/jsonp_chunk_loading.ejs");
 static JSONP_CHUNK_LOADING_WITH_PREFETCH_TEMPLATE: &str =
@@ -49,6 +35,22 @@ static JSONP_CHUNK_LOADING_WITH_CALLBACK_TEMPLATE: &str =
   include_str!("runtime/jsonp_chunk_loading_with_callback.ejs");
 static JAVASCRIPT_HOT_MODULE_REPLACEMENT_TEMPLATE: &str =
   include_str!("runtime/javascript_hot_module_replacement.ejs");
+static RUNTIME_MODULE_VARIABLES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+  let mut variables = extract_runtime_module_variables_from_ejs(&[
+    JSONP_CHUNK_LOADING_TEMPLATE,
+    JSONP_CHUNK_LOADING_WITH_PREFETCH_TEMPLATE,
+    JSONP_CHUNK_LOADING_WITH_PREFETCH_LINK_TEMPLATE,
+    JSONP_CHUNK_LOADING_WITH_PRELOAD_TEMPLATE,
+    JSONP_CHUNK_LOADING_WITH_PRELOAD_LINK_TEMPLATE,
+    JSONP_CHUNK_LOADING_WITH_HMR_TEMPLATE,
+    JSONP_CHUNK_LOADING_WITH_HMR_MANIFEST_TEMPLATE,
+    JSONP_CHUNK_LOADING_WITH_ON_CHUNK_LOAD_TEMPLATE,
+    JSONP_CHUNK_LOADING_WITH_CALLBACK_TEMPLATE,
+    JAVASCRIPT_HOT_MODULE_REPLACEMENT_TEMPLATE,
+  ]);
+  variables.push("jsonpInstalledChunks");
+  variables
+});
 
 static JSONP_CHUNK_LOADING_BASIC_RUNTIME_REQUIREMENTS: LazyLock<RuntimeModuleRuntimeRequirements> =
   LazyLock::new(|| extract_runtime_globals_from_ejs(JSONP_CHUNK_LOADING_TEMPLATE));
@@ -174,7 +176,7 @@ enum TemplateId {
 #[async_trait::async_trait]
 impl RuntimeModule for JsonpChunkLoadingRuntimeModule {
   fn runtime_module_variables() -> &'static [&'static str] {
-    RUNTIME_MODULE_VARIABLES
+    RUNTIME_MODULE_VARIABLES.as_slice()
   }
 
   fn runtime_requirements(&self, compilation: &Compilation) -> RuntimeModuleRuntimeRequirements {

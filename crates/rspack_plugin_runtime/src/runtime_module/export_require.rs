@@ -5,7 +5,11 @@ use rspack_core::{
 
 pub static EXPORT_REQUIRE_RUNTIME_MODULE_ID: &str = "export_webpack_require";
 pub static EXPORT_REQUIRE_RSPACK_RUNTIME_MODULE_ID: &str = "export_require";
-const RUNTIME_MODULE_VARIABLES: &[&str] = &["__rspack_requiretemp"];
+const RUNTIME_MODULE_VARIABLES: &[&str] = &[
+  "__webpack_require__temp",
+  "__rspack_contexttemp",
+  "rspackRequiretemp",
+];
 
 #[impl_runtime_module(runtime_module_variables)]
 #[derive(Debug)]

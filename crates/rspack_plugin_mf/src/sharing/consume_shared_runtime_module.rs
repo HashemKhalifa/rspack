@@ -5,7 +5,9 @@ use rspack_core::{
   RuntimeModuleGenerateContext, RuntimeModuleRuntimeRequirements, RuntimeModuleStage,
   RuntimeTemplate, SourceType, impl_runtime_module,
 };
-use rspack_plugin_runtime::extract_runtime_globals_from_ejs;
+use rspack_plugin_runtime::{
+  extract_runtime_globals_from_ejs, extract_runtime_module_variables_from_ejs,
+};
 use rspack_util::json_stringify_str;
 
 use super::consume_shared_plugin::ConsumeVersion;
@@ -23,42 +25,13 @@ static CONSUMES_INITIAL_RUNTIME_REQUIREMENTS: LazyLock<RuntimeModuleRuntimeRequi
   LazyLock::new(|| extract_runtime_globals_from_ejs(CONSUMES_INITIAL_TEMPLATE));
 static CONSUMES_LOADING_RUNTIME_REQUIREMENTS: LazyLock<RuntimeModuleRuntimeRequirements> =
   LazyLock::new(|| extract_runtime_globals_from_ejs(CONSUMES_LOADING_TEMPLATE));
-const RUNTIME_MODULE_VARIABLES: &[&str] = &[
-  "splitAndConvert",
-  "parseRange",
-  "parseVersion",
-  "versionLt",
-  "rangeToString",
-  "satisfy",
-  "ensureExistence",
-  "findVersion",
-  "findSingletonVersionKey",
-  "getInvalidSingletonVersionMessage",
-  "getSingleton",
-  "getSingletonVersion",
-  "getStrictSingletonVersion",
-  "findValidVersion",
-  "getInvalidVersionMessage",
-  "getValidVersion",
-  "warn",
-  "warnInvalidVersion",
-  "get",
-  "init",
-  "load",
-  "loadFallback",
-  "loadVersionCheck",
-  "loadSingleton",
-  "loadSingletonVersionCheck",
-  "loadStrictVersionCheck",
-  "loadStrictSingletonVersionCheck",
-  "loadVersionCheckFallback",
-  "loadSingletonFallback",
-  "loadSingletonVersionCheckFallback",
-  "loadStrictVersionCheckFallback",
-  "loadStrictSingletonVersionCheckFallback",
-  "resolveHandler",
-  "consumeSharedInstalledModules",
-];
+static RUNTIME_MODULE_VARIABLES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+  extract_runtime_module_variables_from_ejs(&[
+    CONSUMES_COMMON_TEMPLATE,
+    CONSUMES_INITIAL_TEMPLATE,
+    CONSUMES_LOADING_TEMPLATE,
+  ])
+});
 
 #[impl_runtime_module(runtime_module_variables)]
 #[derive(Debug)]
@@ -89,7 +62,7 @@ enum TemplateId {
 #[async_trait::async_trait]
 impl RuntimeModule for ConsumeSharedRuntimeModule {
   fn runtime_module_variables() -> &'static [&'static str] {
-    RUNTIME_MODULE_VARIABLES
+    RUNTIME_MODULE_VARIABLES.as_slice()
   }
 
   fn runtime_requirements(
