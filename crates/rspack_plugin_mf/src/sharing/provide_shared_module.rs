@@ -22,7 +22,7 @@ use super::{
     CodeGenerationDataShareInit, DataInitInfo, ProvideSharedInfo, ShareInitData,
   },
 };
-use crate::{ConsumeVersion, ShareScope, utils::module_identifier_namespace};
+use crate::{ConsumeVersion, ShareScope, SharedIdentity, utils::module_identifier_namespace};
 
 #[impl_source_map_config]
 #[cacheable]
@@ -65,7 +65,7 @@ impl ProvideSharedModule {
   ) -> Self {
     let scopes_key = share_scope.key();
     let namespace = module_identifier_namespace(runtime_mode);
-    let identifier = format!(
+    let readable_identifier = format!(
       "provide shared module ({}){} {}@{} = {}",
       &scopes_key,
       layer
@@ -76,20 +76,25 @@ impl ProvideSharedModule {
       &version,
       &request
     );
+    let identity_key = SharedIdentity::new(&share_scope, &name, layer.as_deref()).identifier_key();
+    let identifier = if layer.is_none() {
+      format!(
+        "provide shared module {} {name}@{version} = {request}",
+        share_scope.identifier_fragment()
+      )
+    } else {
+      format!("provide shared module [{identity_key}]@{version} = {request}")
+    };
     Self {
       blocks: Vec::new(),
       dependencies: Vec::new(),
       identifier: ModuleIdentifier::from(identifier.as_ref()),
-      lib_ident: format!(
-        "{}{namespace}/sharing/provide/{}/{}",
-        layer
-          .as_ref()
-          .map(|layer| format!("({layer})/"))
-          .unwrap_or_default(),
-        &scopes_key,
-        &name
-      ),
-      readable_identifier: identifier,
+      lib_ident: if layer.is_none() && matches!(&share_scope, ShareScope::Single(_)) {
+        format!("{namespace}/sharing/provide/{scopes_key}/{name}")
+      } else {
+        format!("{namespace}/sharing/provide/{identity_key}")
+      },
+      readable_identifier,
       name,
       share_scope,
       version,
@@ -112,6 +117,10 @@ impl ProvideSharedModule {
 
   pub fn share_key(&self) -> &str {
     &self.name
+  }
+
+  pub(crate) fn shared_identity(&self) -> SharedIdentity {
+    SharedIdentity::new(&self.share_scope, &self.name, self.layer.as_deref())
   }
 
   pub fn share_scope(&self) -> &ShareScope {

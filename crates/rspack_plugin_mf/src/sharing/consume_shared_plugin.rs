@@ -18,9 +18,9 @@ use rspack_hook::{plugin, plugin_hook};
 use rustc_hash::FxHashMap;
 
 use super::{
-  consume_shared_module::ConsumeSharedModule,
-  consume_shared_runtime_module::ConsumeSharedRuntimeModule, create_lookup_key_for_sharing,
-  get_description_file, strip_lookup_layer_prefix,
+  RequestMatchKey, consume_shared_module::ConsumeSharedModule,
+  consume_shared_runtime_module::ConsumeSharedRuntimeModule, find_exact_match, find_prefix_match,
+  get_description_file,
 };
 use crate::ShareScope;
 
@@ -76,23 +76,26 @@ pub static PACKAGE_NAME: LazyLock<Regex> =
 
 #[derive(Debug)]
 pub struct MatchedConsumes {
-  pub resolved: FxHashMap<String, Arc<ConsumeOptions>>,
-  pub unresolved: FxHashMap<String, Arc<ConsumeOptions>>,
-  pub prefixed: FxHashMap<String, Arc<ConsumeOptions>>,
+  pub resolved: FxHashMap<RequestMatchKey, Arc<ConsumeOptions>>,
+  pub unresolved: FxHashMap<RequestMatchKey, Arc<ConsumeOptions>>,
+  pub prefixed: Vec<(RequestMatchKey, Arc<ConsumeOptions>)>,
 }
 
 pub async fn resolve_matched_configs(
   compilation: &mut Compilation,
   resolver: Arc<Resolver>,
   configs: &[(String, Arc<ConsumeOptions>)],
+  enhanced: bool,
 ) -> MatchedConsumes {
   let mut resolved = FxHashMap::default();
   let mut unresolved = FxHashMap::default();
-  let mut prefixed = FxHashMap::default();
+  let mut prefixed = Vec::new();
   for (request, config) in configs {
     let request = config.request.as_deref().unwrap_or(request);
-    let lookup_key = create_lookup_key_for_sharing(request, config.issuer_layer.as_deref());
-    if RELATIVE_REQUEST.is_match(request) {
+    let lookup_key = RequestMatchKey::new(request, config.issuer_layer.as_deref());
+    if RELATIVE_REQUEST.is_match(request) && enhanced {
+      unresolved.insert(lookup_key, config.clone());
+    } else if RELATIVE_REQUEST.is_match(request) {
       let Ok(ResolveResult::Resource(resource)) = resolver
         .resolve(compilation.options.context.as_ref(), request)
         .await
@@ -101,7 +104,7 @@ pub async fn resolve_matched_configs(
         continue;
       };
       let resource_key =
-        create_lookup_key_for_sharing(resource.path.as_str(), config.issuer_layer.as_deref());
+        RequestMatchKey::new(resource.path.as_str(), config.issuer_layer.as_deref());
       resolved.insert(resource_key, config.clone());
       compilation
         .file_dependencies
@@ -109,7 +112,7 @@ pub async fn resolve_matched_configs(
     } else if ABSOLUTE_REQUEST.is_match(request) {
       resolved.insert(lookup_key, config.clone());
     } else if request.ends_with('/') {
-      prefixed.insert(lookup_key, config.clone());
+      prefixed.push((lookup_key, config.clone()));
     } else {
       unresolved.insert(lookup_key, config.clone());
     }
@@ -200,7 +203,13 @@ impl ConsumeSharedPlugin {
   }
 
   async fn init_matched_consumes(&self, compilation: &mut Compilation, resolver: Arc<Resolver>) {
-    let config = resolve_matched_configs(compilation, resolver, &self.options.consumes).await;
+    let config = resolve_matched_configs(
+      compilation,
+      resolver,
+      &self.options.consumes,
+      self.options.enhanced,
+    )
+    .await;
     self
       .matched_consumes
       .set(Arc::new(config))
@@ -298,7 +307,11 @@ impl ConsumeSharedPlugin {
     runtime_mode: RuntimeMode,
     mut add_diagnostic: impl FnMut(Diagnostic),
   ) -> ConsumeSharedModule {
-    let direct_fallback = matches!(&config.import, Some(i) if RELATIVE_REQUEST.is_match(i) | ABSOLUTE_REQUEST.is_match(i));
+    let direct_fallback = matches!(
+      &config.import,
+      Some(i) if ABSOLUTE_REQUEST.is_match(i)
+        || (!self.options.enhanced && RELATIVE_REQUEST.is_match(i))
+    );
     let import_resolved = match &config.import {
       None => None,
       Some(import) => {
@@ -398,13 +411,8 @@ async fn factorize(&self, data: &mut ModuleFactoryCreateData) -> Result<Option<B
   }
   let request = &data.request;
   let consumes = self.get_matched_consumes();
-  let request_lookup = create_lookup_key_for_sharing(request, data.issuer_layer.as_deref());
-  let fallback_lookup = create_lookup_key_for_sharing(request, None);
-
-  if let Some(matched) = consumes
-    .unresolved
-    .get(&request_lookup)
-    .or_else(|| consumes.unresolved.get(&fallback_lookup))
+  if let Some(matched) =
+    find_exact_match(&consumes.unresolved, request, data.issuer_layer.as_deref())
   {
     let module = self
       .create_consume_shared_module(
@@ -417,42 +425,33 @@ async fn factorize(&self, data: &mut ModuleFactoryCreateData) -> Result<Option<B
       .await;
     return Ok(Some(module.boxed()));
   }
-  for (prefix, options) in &consumes.prefixed {
-    if let Some(config_issuer_layer) = options.issuer_layer.as_deref()
-      && data.issuer_layer.as_deref() != Some(config_issuer_layer)
-    {
-      continue;
-    }
-    let lookup = options
-      .request
-      .as_deref()
-      .unwrap_or_else(|| strip_lookup_layer_prefix(prefix));
-    if let Some(remainder) = request.strip_prefix(lookup) {
-      let module = self
-        .create_consume_shared_module(
-          &data.context,
-          request,
-          Arc::new(ConsumeOptions {
-            request: Some(request.to_owned()),
-            issuer_layer: options.issuer_layer.clone(),
-            layer: options.layer.clone(),
-            import: options.import.as_ref().map(|i| i.to_owned() + remainder),
-            import_resolved: options.import_resolved.clone(),
-            share_key: options.share_key.clone() + remainder,
-            share_scope: options.share_scope.clone(),
-            required_version: options.required_version.clone(),
-            package_name: options.package_name.clone(),
-            strict_version: options.strict_version,
-            singleton: options.singleton,
-            eager: options.eager,
-            tree_shaking_mode: options.tree_shaking_mode.clone(),
-          }),
-          data.options.experiments.runtime_mode,
-          |d| data.diagnostics.push(d),
-        )
-        .await;
-      return Ok(Some(module.boxed()));
-    }
+  if let Some((options, remainder)) =
+    find_prefix_match(&consumes.prefixed, request, data.issuer_layer.as_deref())
+  {
+    let module = self
+      .create_consume_shared_module(
+        &data.context,
+        request,
+        Arc::new(ConsumeOptions {
+          request: Some(request.to_owned()),
+          issuer_layer: options.issuer_layer.clone(),
+          layer: options.layer.clone(),
+          import: options.import.as_ref().map(|i| i.to_owned() + remainder),
+          import_resolved: options.import_resolved.clone(),
+          share_key: options.share_key.clone() + remainder,
+          share_scope: options.share_scope.clone(),
+          required_version: options.required_version.clone(),
+          package_name: options.package_name.clone(),
+          strict_version: options.strict_version,
+          singleton: options.singleton,
+          eager: options.eager,
+          tree_shaking_mode: options.tree_shaking_mode.clone(),
+        }),
+        data.options.experiments.runtime_mode,
+        |d| data.diagnostics.push(d),
+      )
+      .await;
+    return Ok(Some(module.boxed()));
   }
   Ok(None)
 }
@@ -473,12 +472,8 @@ async fn create_module(
   }
   let resource = create_data.resource_resolve_data.resource();
   let consumes = self.get_matched_consumes();
-  let resource_lookup = create_lookup_key_for_sharing(resource, data.issuer_layer.as_deref());
-  let fallback_lookup = create_lookup_key_for_sharing(resource, None);
-  if let Some(options) = consumes
-    .resolved
-    .get(&resource_lookup)
-    .or_else(|| consumes.resolved.get(&fallback_lookup))
+  if let Some(options) =
+    find_exact_match(&consumes.resolved, resource, data.issuer_layer.as_deref())
   {
     let module = self
       .create_consume_shared_module(

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::ShareScope;
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct StatsAssetsGroup {
   #[serde(default)]
@@ -52,6 +54,8 @@ pub struct StatsShared {
   pub requiredVersion: Option<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub layer: Option<String>,
+  #[serde(rename = "shareScope", skip_serializing_if = "Option::is_none")]
+  pub share_scope: Option<ShareScope>,
   #[serde(default)]
   pub singleton: Option<bool>,
   #[serde(default)]
@@ -111,7 +115,7 @@ pub struct StatsRoot {
   pub exposes: Vec<StatsExpose>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ManifestExpose {
   pub id: String,
   pub name: String,
@@ -121,7 +125,7 @@ pub struct ManifestExpose {
   pub assets: StatsAssetsGroup,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ManifestShared {
   pub id: String,
   pub name: String,
@@ -130,13 +134,19 @@ pub struct ManifestShared {
   pub requiredVersion: Option<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub layer: Option<String>,
+  #[serde(rename = "shareScope", skip_serializing_if = "Option::is_none")]
+  pub share_scope: Option<ShareScope>,
   #[serde(default)]
   pub singleton: Option<bool>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub usedExports: Vec<String>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub referenceExports: Vec<String>,
   #[serde(default)]
   pub assets: StatsAssetsGroup,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ManifestRemote {
   pub federationContainerName: String,
   pub moduleName: String,
@@ -145,7 +155,7 @@ pub struct ManifestRemote {
   pub entry: Option<String>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ManifestRoot {
   pub id: String,
   pub name: String,

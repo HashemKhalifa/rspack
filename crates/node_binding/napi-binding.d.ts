@@ -2632,12 +2632,14 @@ export interface RawLimitChunkCountPluginOptions {
 export interface RawManifestExposeOption {
   path: string
   name: string
+  layer?: string
 }
 
 export interface RawManifestSharedOption {
   name: string
   version?: string
   requiredVersion?: string
+  shareScope: string | Array<string>
   layer?: string
   singleton?: boolean
 }
@@ -2778,7 +2780,10 @@ export interface RawOptimizationOptions {
 }
 
 export interface RawOptimizeSharedConfig {
+  request: string
+  issuerLayer?: string
   shareKey: string
+  shareScope: string | Array<string>
   treeShaking: boolean
   usedExports?: Array<string>
   layer?: string

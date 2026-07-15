@@ -21,11 +21,16 @@ export type CollectSharedEntryPluginOptions = {
   shareScope?: ShareScope;
 };
 
+export type ShareRequestVariant = {
+  shareScope: ShareScope;
+  layer?: string;
+  requests: [string, string][];
+};
+
 export type ShareRequestsMap = Record<
   string,
-  {
-    shareScope: string;
-    requests: [string, string][];
+  Omit<ShareRequestVariant, 'layer'> & {
+    variants?: ShareRequestVariant[];
   }
 >;
 
@@ -59,7 +64,9 @@ export class CollectSharedEntryPlugin extends RspackBuiltinPlugin {
     const readCollectedEntries = (compilation: Compilation) => {
       const asset = compilation.getAsset(SHARE_ENTRY_ASSET);
       if (!asset) return;
-      this._collectedEntries = JSON.parse(asset.source.source().toString());
+      this._collectedEntries = JSON.parse(
+        asset.source.source().toString(),
+      ) as ShareRequestsMap;
       compilation.deleteAsset(asset.name);
     };
 

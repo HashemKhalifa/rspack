@@ -121,15 +121,18 @@ impl RuntimeModule for ShareRuntimeModule {
             DataInitInfo::ExternalModuleId(Some(id)) => json_stringify(&id),
             DataInitInfo::ProvideSharedInfo(info) => {
               let mut stage = format!(
-                "{{ name: {}, version: {}, factory: {}, eager: {}, layer: {}, treeShakingMode: {}",
+                "{{ name: {}, version: {}, factory: {}, eager: {}, treeShakingMode: {}",
                 json_stringify_str(&info.name),
                 json_stringify_str(&info.version.to_string()),
                 info.factory,
                 if info.eager { "1" } else { "0" },
-                json_stringify(&info.layer),
                 json_stringify(&info.tree_shaking_mode),
               );
               if self.enhanced {
+                if let Some(layer) = info.layer {
+                  stage += ", layer: ";
+                  stage += &json_stringify_str(&layer);
+                }
                 if let Some(singleton) = info.singleton {
                   stage += ", singleton: ";
                   stage += if singleton { "1" } else { "0" };

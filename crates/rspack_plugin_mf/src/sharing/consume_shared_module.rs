@@ -21,7 +21,7 @@ use super::{
   consume_shared_runtime_module::CodeGenerationDataConsumeShared,
 };
 use crate::{
-  ConsumeOptions, ShareScope,
+  ConsumeOptions, ConsumeVersion, ShareScope, SharedIdentity,
   utils::{json_stringify, module_identifier_namespace},
 };
 
@@ -43,14 +43,26 @@ pub struct ConsumeSharedModule {
 }
 
 impl ConsumeSharedModule {
+  pub(crate) fn shared_identity(&self) -> SharedIdentity {
+    SharedIdentity::new(
+      &self.options.share_scope,
+      &self.options.share_key,
+      self.options.layer.as_deref(),
+    )
+  }
+
   pub fn share_scope(&self) -> &ShareScope {
     &self.options.share_scope
+  }
+
+  pub(crate) fn required_version(&self) -> Option<&ConsumeVersion> {
+    self.options.required_version.as_ref()
   }
 
   pub fn new(context: Context, options: ConsumeOptions, runtime_mode: RuntimeMode) -> Self {
     let scopes_key = options.share_scope.key();
     let namespace = module_identifier_namespace(runtime_mode);
-    let identifier = format!(
+    let readable_identifier = format!(
       "consume shared module ({}){} {}@{}{}{}{}{}",
       &scopes_key,
       options
@@ -84,26 +96,83 @@ impl ConsumeSharedModule {
         Default::default()
       },
     );
+    let identifier = format!(
+      "consume shared module {}@{}{}{}{}{}",
+      if options.layer.is_none() {
+        format!(
+          "{} {}",
+          options.share_scope.identifier_fragment(),
+          options.share_key
+        )
+      } else {
+        format!(
+          "[{}]",
+          SharedIdentity::new(
+            &options.share_scope,
+            &options.share_key,
+            options.layer.as_deref()
+          )
+          .identifier_key()
+        )
+      },
+      options
+        .required_version
+        .as_ref()
+        .map_or_else(|| "*".to_string(), |v| v.to_string()),
+      if options.strict_version {
+        " (strict)"
+      } else {
+        Default::default()
+      },
+      if options.singleton {
+        " (strict)"
+      } else {
+        Default::default()
+      },
+      options
+        .import_resolved
+        .as_ref()
+        .map(|f| format!(" (fallback: {f})"))
+        .unwrap_or_default(),
+      if options.eager {
+        " (eager)"
+      } else {
+        Default::default()
+      },
+    );
+    let identity_key = SharedIdentity::new(
+      &options.share_scope,
+      &options.share_key,
+      options.layer.as_deref(),
+    )
+    .identifier_key();
     Self {
       blocks: Vec::new(),
       dependencies: Vec::new(),
       identifier: ModuleIdentifier::from(identifier.as_ref()),
-      lib_ident: format!(
-        "{}{namespace}/sharing/consume/{}/{}{}",
-        options
-          .layer
-          .as_ref()
-          .map(|layer| format!("({layer})/"))
-          .unwrap_or_default(),
-        &scopes_key,
-        &options.share_key,
-        options
-          .import
-          .as_ref()
-          .map(|r| format!("/{r}"))
-          .unwrap_or_default()
-      ),
-      readable_identifier: identifier,
+      lib_ident: if options.layer.is_none() && matches!(&options.share_scope, ShareScope::Single(_))
+      {
+        format!(
+          "{namespace}/sharing/consume/{}/{}{}",
+          &scopes_key,
+          &options.share_key,
+          options
+            .import
+            .as_ref()
+            .map(|r| format!("/{r}"))
+            .unwrap_or_default()
+        )
+      } else {
+        format!(
+          "{namespace}/sharing/consume/{identity_key}{}",
+          options
+            .import
+            .as_ref()
+            .map(|r| format!("/{r}"))
+            .unwrap_or_default()
+        )
+      },
+      readable_identifier,
       context,
       options,
       factory_meta: None,
@@ -260,13 +329,7 @@ impl Module for ConsumeSharedModule {
     });
     code_generation_result.add(
       SourceType::ConsumeShared,
-      RawStringSource::from(factory.clone().unwrap_or_else(|| {
-        format!(
-          "()=>()=>{{throw new Error(\"Can not get '{}' \")}}",
-          self.options.share_key
-        )
-      }))
-      .boxed(),
+      RawStringSource::from(factory.clone().unwrap_or_else(|| "undefined".to_string())).boxed(),
     );
     code_generation_result
       .data

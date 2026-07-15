@@ -17,9 +17,9 @@ use rustc_hash::FxHashMap;
 use tokio::sync::RwLock;
 
 use super::{
-  create_lookup_key_for_sharing, find_ancestor_description_data,
+  RequestMatchKey, find_ancestor_description_data, find_exact_match, find_prefix_match,
   provide_shared_dependency::ProvideSharedDependency,
-  provide_shared_module_factory::ProvideSharedModuleFactory, strip_lookup_layer_prefix,
+  provide_shared_module_factory::ProvideSharedModuleFactory,
 };
 use crate::{ConsumeVersion, ShareScope};
 
@@ -94,9 +94,9 @@ impl fmt::Display for ProvideVersion {
 #[derive(Debug)]
 pub struct ProvideSharedPlugin {
   provides: Vec<(String, ProvideOptions)>,
-  resolved_provide_map: RwLock<FxHashMap<String, VersionedProvideOptions>>,
-  match_provides: RwLock<FxHashMap<String, ProvideOptions>>,
-  prefix_match_provides: RwLock<FxHashMap<String, ProvideOptions>>,
+  resolved_provide_map: RwLock<FxHashMap<RequestMatchKey, VersionedProvideOptions>>,
+  match_provides: RwLock<FxHashMap<RequestMatchKey, ProvideOptions>>,
+  prefix_match_provides: RwLock<Vec<(RequestMatchKey, ProvideOptions)>>,
 }
 
 impl ProvideSharedPlugin {
@@ -156,7 +156,7 @@ impl ProvideSharedPlugin {
   ) {
     let title = "rspack.ProvideSharedPlugin";
     let error_header = "No version specified and unable to automatically determine one.";
-    let lookup_key = create_lookup_key_for_sharing(resource, layer.as_deref());
+    let lookup_key = RequestMatchKey::new(resource, layer.as_deref());
     if let Some(version) = version {
       self.resolved_provide_map.write().await.insert(
         lookup_key.clone(),
@@ -238,11 +238,11 @@ async fn compilation(
   let mut prefix_match_provides = self.prefix_match_provides.write().await;
   for (request, config) in &self.provides {
     let actual_request = config.request.as_deref().unwrap_or(request);
-    let lookup_key = create_lookup_key_for_sharing(actual_request, config.layer.as_deref());
+    let lookup_key = RequestMatchKey::new(actual_request, config.layer.as_deref());
     if RELATIVE_REQUEST.is_match(actual_request) || ABSOLUTE_REQUEST.is_match(actual_request) {
       resolved_provide_map.insert(lookup_key, config.to_versioned());
     } else if actual_request.ends_with('/') {
-      prefix_match_provides.insert(lookup_key, config.clone());
+      prefix_match_provides.push((lookup_key, config.clone()));
     } else {
       match_provides.insert(lookup_key, config.clone());
     }
@@ -261,7 +261,7 @@ async fn finish_make(&self, compilation: &mut Compilation) -> Result<()> {
       let request = config
         .request
         .clone()
-        .unwrap_or_else(|| strip_lookup_layer_prefix(lookup_key).to_string());
+        .unwrap_or_else(|| lookup_key.request().to_string());
       (
         Box::new(ProvideSharedDependency::new(
           config.share_scope.clone(),
@@ -299,82 +299,60 @@ async fn normal_module_factory_module(
     .get_layer()
     .cloned()
     .or_else(|| data.issuer_layer.clone());
-  let resource_lookup = create_lookup_key_for_sharing(resource, effective_layer.as_deref());
-  let fallback_resource_lookup = create_lookup_key_for_sharing(resource, None);
-  if self
-    .resolved_provide_map
-    .read()
-    .await
-    .contains_key(&resource_lookup)
-  {
-    return Ok(());
-  }
-  if effective_layer.is_none()
-    && self
-      .resolved_provide_map
-      .read()
-      .await
-      .contains_key(&fallback_resource_lookup)
-  {
+  let already_resolved = {
+    let resolved_provide_map = self.resolved_provide_map.read().await;
+    resolved_provide_map.contains_key(&RequestMatchKey::new(resource, effective_layer.as_deref()))
+  };
+  if already_resolved {
     return Ok(());
   }
   let request = &data.request;
-  let request_lookup = create_lookup_key_for_sharing(request, effective_layer.as_deref());
-  let fallback_request_lookup = create_lookup_key_for_sharing(request, None);
-  {
+  let matched = {
     let match_provides = self.match_provides.read().await;
-    if let Some(config) = match_provides
-      .get(&request_lookup)
-      .or_else(|| match_provides.get(&fallback_request_lookup))
-    {
-      self
-        .provide_shared_module(
-          request,
-          &config.share_key,
-          &config.share_scope,
-          config.version.as_ref(),
-          config.eager,
-          config.singleton,
-          config.required_version.clone(),
-          config.strict_version,
-          config.tree_shaking_mode.clone(),
-          config.layer.clone(),
-          resource,
-          resource_data,
-          |d| data.diagnostics.push(d),
-        )
-        .await;
-    }
+    find_exact_match(&match_provides, request, effective_layer.as_deref()).cloned()
+  };
+  if let Some(config) = matched {
+    self
+      .provide_shared_module(
+        request,
+        &config.share_key,
+        &config.share_scope,
+        config.version.as_ref(),
+        config.eager,
+        config.singleton,
+        config.required_version.clone(),
+        config.strict_version,
+        config.tree_shaking_mode.clone(),
+        config.layer.clone(),
+        resource,
+        resource_data,
+        |d| data.diagnostics.push(d),
+      )
+      .await;
   }
-  for (prefix_lookup, config) in self.prefix_match_provides.read().await.iter() {
-    if let Some(config_layer) = config.layer.as_deref()
-      && effective_layer.as_deref() != Some(config_layer)
-    {
-      continue;
-    }
-    let prefix = config
-      .request
-      .as_deref()
-      .unwrap_or_else(|| strip_lookup_layer_prefix(prefix_lookup));
-    if let Some(remainder) = request.strip_prefix(prefix) {
-      self
-        .provide_shared_module(
-          request,
-          &(config.share_key.clone() + remainder),
-          &config.share_scope,
-          config.version.as_ref(),
-          config.eager,
-          config.singleton,
-          config.required_version.clone(),
-          config.strict_version,
-          config.tree_shaking_mode.clone(),
-          config.layer.clone(),
-          resource,
-          resource_data,
-          |d| data.diagnostics.push(d),
-        )
-        .await;
-    }
+  let prefix_match = {
+    let prefix_match_provides = self.prefix_match_provides.read().await;
+    find_prefix_match(&prefix_match_provides, request, effective_layer.as_deref())
+      .map(|(config, remainder)| (config.clone(), remainder.to_string()))
+  };
+  if let Some((config, remainder)) = prefix_match {
+    self
+      .provide_shared_module(
+        request,
+        &(config.share_key.clone() + remainder.as_str()),
+        &config.share_scope,
+        config.version.as_ref(),
+        config.eager,
+        config.singleton,
+        config.required_version.clone(),
+        config.strict_version,
+        config.tree_shaking_mode.clone(),
+        config.layer.clone(),
+        resource,
+        resource_data,
+        |d| data.diagnostics.push(d),
+      )
+      .await;
   }
   Ok(())
 }

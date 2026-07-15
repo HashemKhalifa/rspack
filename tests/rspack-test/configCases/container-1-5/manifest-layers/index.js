@@ -26,6 +26,7 @@ it("should include the layered consumed shared entry in stats", () => {
     expect.objectContaining({
       name: "react",
       layer: "react-layer",
+      shareScope: "react-layer",
       singleton: true,
       assets: expect.objectContaining({
         js: expect.objectContaining({
@@ -49,6 +50,7 @@ it("should include the layered consumed shared entry in manifest", () => {
     expect.objectContaining({
       name: "react",
       layer: "react-layer",
+      shareScope: "react-layer",
       assets: expect.objectContaining({
         js: expect.objectContaining({
           sync: expect.any(Array),

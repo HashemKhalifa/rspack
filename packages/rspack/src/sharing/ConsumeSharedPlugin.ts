@@ -9,7 +9,7 @@ import {
 } from '../builtin-plugin/base';
 import type { Compiler } from '../Compiler';
 import { parseOptions } from '../container/options';
-import type { ShareScope } from './SharePlugin';
+import { normalizeShareScope, type ShareScope } from './SharePlugin';
 import { ShareRuntimePlugin } from './ShareRuntimePlugin';
 import {
   isRequiredVersion,
@@ -18,23 +18,21 @@ import {
   resolveShareScope,
 } from './utils';
 
-export type ConsumeSharedPluginOptions = {
-  consumes: Consumes;
+export type ConsumeSharedPluginOptions<Enhanced extends boolean = boolean> = {
+  consumes: Consumes<Enhanced>;
   shareScope?: ShareScope;
-  enhanced?: boolean;
+  enhanced?: Enhanced;
 };
-export type Consumes = (ConsumesItem | ConsumesObject)[] | ConsumesObject;
+export type Consumes<Enhanced extends boolean = boolean> =
+  (ConsumesItem | ConsumesObject<Enhanced>)[] | ConsumesObject<Enhanced>;
 export type ConsumesItem = string;
-export type ConsumesObject = {
-  [k: string]: ConsumesConfig | ConsumesItem;
+export type ConsumesObject<Enhanced extends boolean = boolean> = {
+  [k: string]: ConsumesConfig<Enhanced> | ConsumesItem;
 };
-export type ConsumesConfig = {
+type ConsumesV1Config = {
   eager?: boolean;
   import?: false | ConsumesItem;
-  issuerLayer?: string;
-  layer?: string;
   packageName?: string;
-  request?: string;
   requiredVersion?: false | string;
   shareKey?: string;
   shareScope?: ShareScope;
@@ -42,12 +40,17 @@ export type ConsumesConfig = {
   strictVersion?: boolean;
   treeShakingMode?: 'server-calc' | 'runtime-infer';
 };
+type ConsumesEnhancedConfig = ConsumesV1Config & {
+  issuerLayer?: string;
+  layer?: string;
+  request?: string;
+};
+export type ConsumesConfig<Enhanced extends boolean = boolean> =
+  Enhanced extends true ? ConsumesEnhancedConfig : ConsumesV1Config;
 
-export function normalizeConsumeShareOptions(
-  consumes: Consumes,
-  shareScope?: ShareScope,
-  enhanced?: boolean,
-) {
+export function normalizeConsumeShareOptions<
+  Enhanced extends boolean = boolean,
+>(consumes: Consumes<Enhanced>, shareScope?: ShareScope, enhanced?: Enhanced) {
   return parseOptions(
     consumes,
     (item, key) => {
@@ -57,7 +60,11 @@ export function normalizeConsumeShareOptions(
           ? // item is a request/key
             {
               import: key,
-              shareScope: resolveShareScope(undefined, shareScope),
+              shareScope: normalizeShareScope(
+                resolveShareScope(undefined, shareScope),
+                !!enhanced,
+                'ConsumeSharedPlugin',
+              ),
               shareKey: key,
               requiredVersion: undefined,
               packageName: undefined,
@@ -73,7 +80,11 @@ export function normalizeConsumeShareOptions(
             // item is a version
             {
               import: key,
-              shareScope: resolveShareScope(undefined, shareScope),
+              shareScope: normalizeShareScope(
+                resolveShareScope(undefined, shareScope),
+                !!enhanced,
+                'ConsumeSharedPlugin',
+              ),
               shareKey: key,
               requiredVersion: item,
               strictVersion: true,
@@ -88,10 +99,28 @@ export function normalizeConsumeShareOptions(
       return result;
     },
     (item, key) => {
-      const request = resolveShareRequest(item.request, key);
+      const enhancedItem = item as ConsumesEnhancedConfig;
+      if (!enhanced) {
+        const unsupported = ['request', 'issuerLayer', 'layer'].find(
+          (field) =>
+            enhancedItem[field as keyof ConsumesEnhancedConfig] !== undefined,
+        );
+        if (unsupported) {
+          throw new Error(
+            `[ConsumeSharedPlugin] ${unsupported} requires enhanced=true`,
+          );
+        }
+      }
+      const request = enhanced
+        ? resolveShareRequest(enhancedItem.request, key)
+        : key;
       return {
         import: item.import === false ? undefined : item.import || request,
-        shareScope: resolveShareScope(item.shareScope, shareScope),
+        shareScope: normalizeShareScope(
+          resolveShareScope(item.shareScope, shareScope),
+          !!enhanced,
+          'ConsumeSharedPlugin',
+        ),
         shareKey: resolveShareKey(item.shareKey, request),
         requiredVersion: item.requiredVersion,
         strictVersion:
@@ -101,8 +130,8 @@ export function normalizeConsumeShareOptions(
         packageName: item.packageName,
         singleton: !!item.singleton,
         eager: !!item.eager,
-        issuerLayer: enhanced ? item.issuerLayer : undefined,
-        layer: enhanced ? item.layer : undefined,
+        issuerLayer: enhanced ? enhancedItem.issuerLayer : undefined,
+        layer: enhanced ? enhancedItem.layer : undefined,
         request,
         treeShakingMode: item.treeShakingMode,
       };
@@ -110,11 +139,13 @@ export function normalizeConsumeShareOptions(
   );
 }
 
-export class ConsumeSharedPlugin extends RspackBuiltinPlugin {
+export class ConsumeSharedPlugin<
+  Enhanced extends boolean = boolean,
+> extends RspackBuiltinPlugin {
   name = BuiltinPluginName.ConsumeSharedPlugin;
   _options;
 
-  constructor(options: ConsumeSharedPluginOptions) {
+  constructor(options: ConsumeSharedPluginOptions<Enhanced>) {
     super();
     this._options = {
       consumes: normalizeConsumeShareOptions(

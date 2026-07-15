@@ -123,6 +123,8 @@ it('should inject usedExports into manifest and stats if enable manifest', async
 
   const statsPath = path.join(__dirname, 'mf-stats.json');
   const statsContent = JSON.parse(fs.readFileSync(statsPath, 'utf-8'));
+  const manifestPath = path.join(__dirname, 'mf-manifest.json');
+  const manifestContent = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
   expect(
     JSON.stringify(
       statsContent.shared.find((s) => s.name === 'ui-lib').usedExports.sort(),
@@ -132,4 +134,13 @@ it('should inject usedExports into manifest and stats if enable manifest', async
   expect(statsContent.shared.some((s) => s.name === '(ui-layer) ui-lib')).toBe(
     false,
   );
+  expect(
+    manifestContent.shared.find((s) => s.name === 'ui-lib').usedExports.sort(),
+  ).toEqual(['Button', 'default']);
+  expect(
+    manifestContent.shared
+      .find((s) => s.name === 'ui-lib')
+      .referenceExports.sort(),
+  ).toEqual(['Button', 'default']);
+  expect(manifestContent.shared[0]).not.toHaveProperty('usedIn');
 });

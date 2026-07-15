@@ -53,6 +53,7 @@ export class TreeShakingSharedPlugin {
           sharedOptions,
           mfConfig.injectTreeShakingUsedExports,
           mfConfig.manifest,
+          mfConfig.shareScope,
         ).apply(compiler);
       }
       this._independentSharePlugin = new IndependentSharedPlugin({
@@ -67,6 +68,7 @@ export class TreeShakingSharedPlugin {
         treeShaking: secondary,
         library,
         manifest: mfConfig.manifest,
+        shareScope: mfConfig.shareScope,
         treeShakingSharedExcludePlugins:
           mfConfig.treeShakingSharedExcludePlugins,
         onBuildAssets: this.onBuildAssets,

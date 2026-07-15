@@ -61,8 +61,8 @@ impl ContainerEntryModule {
       blocks: Vec::new(),
       dependencies: Vec::new(),
       identifier: ModuleIdentifier::from(format!(
-        "container entry ({}) {}",
-        share_scope.key(),
+        "container entry {} {}",
+        share_scope.identifier_fragment(),
         json_stringify(&exposes),
       )),
       lib_ident,

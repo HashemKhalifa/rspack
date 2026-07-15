@@ -10,16 +10,32 @@ import {
 
 export type ShareScope = string | string[];
 
+export function normalizeShareScope(
+  shareScope: ShareScope,
+  enhanced: boolean,
+  pluginName: string,
+): ShareScope {
+  if (!Array.isArray(shareScope)) return shareScope;
+  if (shareScope.length === 0) {
+    throw new Error(
+      `[${pluginName}] shareScope array must contain at least one entry`,
+    );
+  }
+  if (shareScope.length > 1 && !enhanced) {
+    throw new Error(
+      `[${pluginName}] shareScope as an array with multiple entries requires enhanced=true, got: ${JSON.stringify(shareScope)}`,
+    );
+  }
+  if (!enhanced) return shareScope[0];
+  return shareScope;
+}
+
 export function validateShareScope(
   shareScope: ShareScope,
   enhanced: boolean,
   pluginName: string,
 ): void {
-  if (Array.isArray(shareScope) && shareScope.length > 1 && !enhanced) {
-    throw new Error(
-      `[${pluginName}] shareScope as an array with multiple entries requires enhanced=true, got: ${JSON.stringify(shareScope)}`,
-    );
-  }
+  normalizeShareScope(shareScope, enhanced, pluginName);
 }
 
 export type SharePluginOptions = {
@@ -137,18 +153,35 @@ export class SharePlugin {
 
   constructor(options: SharePluginOptions) {
     const enhanced = options.enhanced ?? false;
-    const sharedOptions = normalizeSharedOptions(options.shared);
-    if (options.shareScope) {
-      validateShareScope(options.shareScope, enhanced, 'SharePlugin');
-    }
-    for (const [, config] of sharedOptions) {
-      if (config.shareScope) {
-        validateShareScope(config.shareScope, enhanced, 'SharePlugin');
+    const shareScope = options.shareScope
+      ? normalizeShareScope(options.shareScope, enhanced, 'SharePlugin')
+      : undefined;
+    const sharedOptions = normalizeSharedOptions(options.shared).map(
+      ([key, config]) => [
+        key,
+        {
+          ...config,
+          shareScope: config.shareScope
+            ? normalizeShareScope(config.shareScope, enhanced, 'SharePlugin')
+            : undefined,
+        },
+      ],
+    ) satisfies NormalizedSharedOptions;
+    if (!enhanced) {
+      for (const [, config] of sharedOptions) {
+        const unsupported = ['request', 'issuerLayer', 'layer'].find(
+          (field) => config[field as keyof SharedConfig] !== undefined,
+        );
+        if (unsupported) {
+          throw new Error(
+            `[SharePlugin] ${unsupported} requires enhanced=true`,
+          );
+        }
       }
     }
     const consumes = createConsumeShareOptions(sharedOptions, enhanced);
     const provides = createProvideShareOptions(sharedOptions, enhanced);
-    this._shareScope = options.shareScope;
+    this._shareScope = shareScope;
     this._consumes = consumes;
     this._provides = provides;
     this._enhanced = enhanced;

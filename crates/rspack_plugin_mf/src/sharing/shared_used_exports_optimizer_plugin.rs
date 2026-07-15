@@ -4,7 +4,7 @@ use rspack_core::{
   AsyncDependenciesBlockIdentifier, ChunkUkey, Compilation,
   CompilationAdditionalTreeRuntimeRequirements, CompilationDependencyReferencedExports,
   CompilationOptimizeDependencies, CompilationProcessAssets, DependenciesBlock, Dependency,
-  DependencyId, DependencyType, ExportsInfoArtifact, ExtendedReferencedExport, Module, ModuleGraph,
+  DependencyId, DependencyType, ExportsInfoArtifact, ExtendedReferencedExport, ModuleGraph,
   ModuleIdentifier, Plugin, RuntimeGlobals, RuntimeModule, RuntimeModuleExt, RuntimeSpec,
   SideEffectsOptimizeArtifact,
   build_module_graph::BuildModuleGraphArtifact,
@@ -18,46 +18,27 @@ use rspack_util::atom::Atom;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{
-  consume_shared_module::ConsumeSharedModule, provide_shared_module::ProvideSharedModule,
+  RequestMatchKey, consume_shared_module::ConsumeSharedModule, find_exact_match,
+  provide_shared_module::ProvideSharedModule,
   shared_used_exports_optimizer_runtime_module::SharedUsedExportsOptimizerRuntimeModule,
 };
-use crate::{container::container_entry_module::ContainerEntryModule, manifest::StatsRoot};
+use crate::{
+  ShareScope, SharedIdentity,
+  container::container_entry_module::ContainerEntryModule,
+  manifest::{ManifestRoot, StatsRoot},
+};
 
-const SHARED_LAYER_SEPARATOR: &str = "\u{0000}";
-
-fn make_shared_lookup_key(share_key: &str, layer: Option<&str>) -> String {
-  match layer {
-    Some(layer) => format!("{share_key}{SHARED_LAYER_SEPARATOR}{layer}"),
-    None => share_key.to_string(),
-  }
-}
-
-fn split_shared_lookup_key(shared_key: &str) -> (&str, Option<&str>) {
-  match shared_key.split_once(SHARED_LAYER_SEPARATOR) {
-    Some((share_key, layer)) => (share_key, Some(layer)),
-    None => (shared_key, None),
-  }
-}
-
-fn resolve_shared_lookup_key(
-  shared_map: &FxHashMap<String, SharedEntryData>,
+fn resolve_unique_shared_identity(
+  shared_map: &FxHashMap<SharedIdentity, SharedEntryData>,
   share_key: &str,
   layer: Option<&str>,
-) -> Option<String> {
-  if let Some(layer) = layer {
-    let layered_key = make_shared_lookup_key(share_key, Some(layer));
-    if shared_map.contains_key(&layered_key) {
-      return Some(layered_key);
-    }
-  }
-
-  if shared_map.contains_key(share_key) {
-    return Some(share_key.to_string());
-  }
-
+) -> Option<SharedIdentity> {
   let mut matches = shared_map
     .keys()
-    .filter(|key| split_shared_lookup_key(key).0 == share_key)
+    .filter(|identity| {
+      identity.share_key == share_key
+        && (identity.layer.as_deref() == layer || identity.layer.is_none())
+    })
     .cloned();
   let first = matches.next()?;
   if matches.next().is_none() {
@@ -66,9 +47,21 @@ fn resolve_shared_lookup_key(
   None
 }
 
+fn shared_identity_from_output(
+  share_key: &str,
+  share_scope: Option<&ShareScope>,
+  layer: Option<&str>,
+) -> SharedIdentity {
+  let default_scope = ShareScope::Single("default".to_string());
+  SharedIdentity::new(share_scope.unwrap_or(&default_scope), share_key, layer)
+}
+
 #[derive(Debug, Clone)]
 pub struct OptimizeSharedConfig {
+  pub request: String,
+  pub issuer_layer: Option<String>,
   pub share_key: String,
+  pub share_scope: ShareScope,
   pub layer: Option<String>,
   pub tree_shaking: bool,
   pub used_exports: Vec<String>,
@@ -90,8 +83,9 @@ struct SharedEntryData {
 #[plugin]
 #[derive(Debug, Clone)]
 pub struct SharedUsedExportsOptimizerPlugin {
-  shared_map: FxHashMap<String, SharedEntryData>,
-  shared_referenced_exports: Arc<RwLock<FxHashMap<String, FxHashSet<String>>>>,
+  shared_map: FxHashMap<SharedIdentity, SharedEntryData>,
+  request_map: FxHashMap<RequestMatchKey, SharedIdentity>,
+  shared_referenced_exports: Arc<RwLock<FxHashMap<SharedIdentity, FxHashSet<String>>>>,
   inject_tree_shaking_used_exports: bool,
   stats_file_name: Option<String>,
   manifest_file_name: Option<String>,
@@ -100,6 +94,7 @@ pub struct SharedUsedExportsOptimizerPlugin {
 impl SharedUsedExportsOptimizerPlugin {
   pub fn new(options: SharedUsedExportsOptimizerPluginOptions) -> Self {
     let mut shared_map = FxHashMap::default();
+    let mut request_map = FxHashMap::default();
     let inject_tree_shaking_used_exports = options.inject_tree_shaking_used_exports;
     for config in options.shared.into_iter().filter(|c| c.tree_shaking) {
       let atoms = config
@@ -107,21 +102,31 @@ impl SharedUsedExportsOptimizerPlugin {
         .into_iter()
         .map(Atom::from)
         .collect::<Vec<_>>();
-      let lookup_key = make_shared_lookup_key(&config.share_key, config.layer.as_deref());
+      let identity = SharedIdentity::new(
+        &config.share_scope,
+        &config.share_key,
+        config.layer.as_deref(),
+      );
+      request_map.insert(
+        RequestMatchKey::new(&config.request, config.issuer_layer.as_deref()),
+        identity.clone(),
+      );
       shared_map.insert(
-        lookup_key,
+        identity,
         SharedEntryData {
           used_exports: atoms,
         },
       );
     }
 
-    let shared_referenced_exports = Arc::new(RwLock::new(
-      FxHashMap::<String, FxHashSet<String>>::default(),
-    ));
+    let shared_referenced_exports = Arc::new(RwLock::new(FxHashMap::<
+      SharedIdentity,
+      FxHashSet<String>,
+    >::default()));
 
     Self::new_inner(
       shared_map,
+      request_map,
       shared_referenced_exports,
       inject_tree_shaking_used_exports,
       options.stats_file_name,
@@ -200,68 +205,54 @@ async fn optimize_dependencies(
           return None;
         }
         let mut modules_to_process = Vec::new();
-        let layer = module.get_layer().map(|layer| layer.as_str());
-        let share_key = match module_type {
+        let shared_identity = match module_type {
           rspack_core::ModuleType::ConsumeShared => {
             let consume_shared_module = module.as_any().downcast_ref::<ConsumeSharedModule>()?;
-            let identifier =
-              consume_shared_module.readable_identifier(&rspack_core::Context::default());
-            let mut rest = identifier.strip_prefix("consume shared module ")?;
-            let scope_end = rest.find(") ")?;
-            rest = &rest[scope_end + 2..];
-            if rest.starts_with('(') {
-              let layer_end = rest.find(") ")?;
-              rest = &rest[layer_end + 2..];
-            }
-            let head = rest.split(" (").next().unwrap_or(rest);
-            let at = head.rfind('@').unwrap_or(head.len());
-            let sk = head[..at].to_string();
             collect_processed_modules(
               module_graph,
               consume_shared_module.get_blocks(),
               consume_shared_module.get_dependencies(),
               &mut modules_to_process,
             );
-            sk
+            consume_shared_module.shared_identity()
           }
           rspack_core::ModuleType::ProvideShared => {
             let provide_shared_module = module.as_any().downcast_ref::<ProvideSharedModule>()?;
-            let sk = provide_shared_module.share_key().to_string();
             collect_processed_modules(
               module_graph,
               provide_shared_module.get_blocks(),
               provide_shared_module.get_dependencies(),
               &mut modules_to_process,
             );
-            sk
+            provide_shared_module.shared_identity()
           }
           rspack_core::ModuleType::ShareContainerShared => {
             let share_container_entry_module =
               module.as_any().downcast_ref::<ContainerEntryModule>()?;
-            let sk = share_container_entry_module.name().to_string();
             collect_processed_modules(
               module_graph,
               share_container_entry_module.get_blocks(),
               share_container_entry_module.get_dependencies(),
               &mut modules_to_process,
             );
-            sk
+            resolve_unique_shared_identity(
+              &self.shared_map,
+              share_container_entry_module.name(),
+              module.get_layer().map(|layer| layer.as_str()),
+            )?
           }
           _ => return None,
         };
-        Some((
-          make_shared_lookup_key(&share_key, layer),
-          modules_to_process,
-        ))
+        Some((shared_identity, modules_to_process))
       })
     };
 
-    let (share_key, modules_to_process) = match share_info {
+    let (shared_identity, modules_to_process) = match share_info {
       Some(result) => result,
       None => continue,
     };
 
-    if share_key.is_empty() {
+    if shared_identity.share_key.is_empty() {
       continue;
     }
 
@@ -271,11 +262,11 @@ async fn optimize_dependencies(
         .shared_referenced_exports
         .read()
         .expect("lock poisoned")
-        .get(&share_key)
+        .get(&shared_identity)
         .cloned()
     };
     // Check if this share key is in our shared map and has tree_shaking enabled
-    if !self.shared_map.contains_key(&share_key) {
+    if !self.shared_map.contains_key(&shared_identity) {
       continue;
     }
     if let Some(runtime_reference_exports) = runtime_reference_exports {
@@ -297,7 +288,7 @@ async fn optimize_dependencies(
         if !is_side_effect_free {
           // Clear referenced exports for this share_key when module is not side-effect free
           if let Ok(mut shared_referenced_exports) = self.shared_referenced_exports.write()
-            && let Some(set) = shared_referenced_exports.get_mut(&share_key)
+            && let Some(set) = shared_referenced_exports.get_mut(&shared_identity)
           {
             set.clear();
           }
@@ -360,36 +351,58 @@ async fn optimize_dependencies(
 
 #[plugin_hook(CompilationProcessAssets for SharedUsedExportsOptimizerPlugin, stage = 1)]
 async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
-  let file_names = vec![
-    self.stats_file_name.clone(),
-    self.manifest_file_name.clone(),
-  ];
-  for file_name in file_names {
-    if let Some(file_name) = &file_name
-      && let Some(file) = compilation.assets().get(file_name)
-      && let Some(source) = file.get_source()
-      && let SourceValue::String(content) = source.source()
-      && let Ok(mut stats_root) = serde_json::from_str::<StatsRoot>(&content)
-    {
-      let shared_referenced_exports = self
-        .shared_referenced_exports
-        .read()
-        .expect("lock poisoned");
+  let shared_referenced_exports = self
+    .shared_referenced_exports
+    .read()
+    .expect("lock poisoned");
 
-      for shared in &mut stats_root.shared {
-        let shared_lookup_key = make_shared_lookup_key(&shared.name, shared.layer.as_deref());
-        if let Some(exports_set) = shared_referenced_exports.get(&shared_lookup_key) {
-          shared.usedExports = exports_set.iter().cloned().collect::<Vec<_>>();
-        }
+  if let Some(file_name) = &self.stats_file_name
+    && let Some(file) = compilation.assets().get(file_name)
+    && let Some(source) = file.get_source()
+    && let SourceValue::String(content) = source.source()
+    && let Ok(mut stats_root) = serde_json::from_str::<StatsRoot>(&content)
+  {
+    for shared in &mut stats_root.shared {
+      let identity = shared_identity_from_output(
+        &shared.name,
+        shared.share_scope.as_ref(),
+        shared.layer.as_deref(),
+      );
+      if let Some(exports_set) = shared_referenced_exports.get(&identity) {
+        shared.usedExports = exports_set.iter().cloned().collect::<Vec<_>>();
+        shared.usedExports.sort();
       }
-
-      let updated_content = serde_json::to_string_pretty(&stats_root)
-        .map_err(|e| rspack_error::error!("Failed to serialize stats root: {}", e))?;
-
-      compilation.update_asset(file_name, |_, info| {
-        Ok((RawStringSource::from(updated_content).boxed(), info))
-      })?;
     }
+    let updated_content = serde_json::to_string_pretty(&stats_root)
+      .map_err(|e| rspack_error::error!("Failed to serialize stats root: {}", e))?;
+    compilation.update_asset(file_name, |_, info| {
+      Ok((RawStringSource::from(updated_content).boxed(), info))
+    })?;
+  }
+
+  if let Some(file_name) = &self.manifest_file_name
+    && let Some(file) = compilation.assets().get(file_name)
+    && let Some(source) = file.get_source()
+    && let SourceValue::String(content) = source.source()
+    && let Ok(mut manifest_root) = serde_json::from_str::<ManifestRoot>(&content)
+  {
+    for shared in &mut manifest_root.shared {
+      let identity = shared_identity_from_output(
+        &shared.name,
+        shared.share_scope.as_ref(),
+        shared.layer.as_deref(),
+      );
+      if let Some(exports_set) = shared_referenced_exports.get(&identity) {
+        shared.usedExports = exports_set.iter().cloned().collect::<Vec<_>>();
+        shared.usedExports.sort();
+        shared.referenceExports.clone_from(&shared.usedExports);
+      }
+    }
+    let updated_content = serde_json::to_string_pretty(&manifest_root)
+      .map_err(|e| rspack_error::error!("Failed to serialize manifest root: {}", e))?;
+    compilation.update_asset(file_name, |_, info| {
+      Ok((RawStringSource::from(updated_content).boxed(), info))
+    })?;
   }
 
   Ok(())
@@ -450,17 +463,19 @@ fn dependency_referenced_exports(
     return Ok(());
   };
 
-  let share_key: &str = module_dependency.request();
-  let Some(shared_lookup_key) = resolve_shared_lookup_key(
-    &self.shared_map,
-    share_key,
-    dependency.get_layer().map(|layer| layer.as_str()),
-  ) else {
+  let request = module_dependency.request();
+  let issuer_layer = module_graph
+    .get_parent_module(dependency_id)
+    .and_then(|identifier| module_graph.module_by_identifier(identifier))
+    .and_then(|module| module.get_layer())
+    .map(|layer| layer.as_str());
+  let Some(shared_identity) = find_exact_match(&self.request_map, request, issuer_layer).cloned()
+  else {
     return Ok(());
   };
 
   // Check if dependency type is EsmImportSpecifier and share_key is in shared_map
-  if !self.shared_map.contains_key(&shared_lookup_key) {
+  if !self.shared_map.contains_key(&shared_identity) {
     return Ok(());
   }
   let mut final_exports = exports.clone();
@@ -481,7 +496,7 @@ fn dependency_referenced_exports(
       .shared_referenced_exports
       .write()
       .expect("lock poisoned");
-    shared_referenced_exports.remove(&shared_lookup_key);
+    shared_referenced_exports.remove(&shared_identity);
     return Ok(());
   }
   if (final_exports.is_empty() || is_exports_object)
@@ -509,13 +524,13 @@ fn dependency_referenced_exports(
   }
 
   // Process each referenced export
-  if self.shared_map.contains_key(&shared_lookup_key) {
+  if self.shared_map.contains_key(&shared_identity) {
     let mut shared_referenced_exports = self
       .shared_referenced_exports
       .write()
       .expect("lock poisoned");
     let export_set = shared_referenced_exports
-      .entry(shared_lookup_key)
+      .entry(shared_identity)
       .or_default();
 
     for referenced_export in &final_exports {
@@ -567,5 +582,45 @@ impl Plugin for SharedUsedExportsOptimizerPlugin {
         .tap(additional_tree_runtime_requirements::new(self));
     }
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{
+    OptimizeSharedConfig, SharedUsedExportsOptimizerPlugin, SharedUsedExportsOptimizerPluginOptions,
+  };
+  use crate::ShareScope;
+
+  #[test]
+  fn optimizer_keeps_same_key_and_layer_separate_by_scope() {
+    let plugin = SharedUsedExportsOptimizerPlugin::new(SharedUsedExportsOptimizerPluginOptions {
+      shared: vec![
+        OptimizeSharedConfig {
+          request: "pkg-a".to_string(),
+          issuer_layer: None,
+          share_key: "pkg".to_string(),
+          share_scope: ShareScope::Single("scope-a".to_string()),
+          layer: Some("server".to_string()),
+          tree_shaking: true,
+          used_exports: vec!["a".to_string()],
+        },
+        OptimizeSharedConfig {
+          request: "pkg-b".to_string(),
+          issuer_layer: None,
+          share_key: "pkg".to_string(),
+          share_scope: ShareScope::Single("scope-b".to_string()),
+          layer: Some("server".to_string()),
+          tree_shaking: true,
+          used_exports: vec!["b".to_string()],
+        },
+      ],
+      inject_tree_shaking_used_exports: true,
+      stats_file_name: None,
+      manifest_file_name: None,
+    });
+
+    assert_eq!(plugin.shared_map.len(), 2);
+    assert_eq!(plugin.request_map.len(), 2);
   }
 }

@@ -236,17 +236,12 @@ export default function () {
         )) {
           const existingInfos =
             __module_federation_remote_infos__[remoteData.remoteName] || [];
-          let info = existingInfos;
-          if (remoteData.remoteInfo) {
-            const hasRemoteInfo = existingInfos.some(
-              (item) =>
-                item.externalType === remoteData.remoteInfo.externalType &&
-                item.name === remoteData.remoteInfo.name,
-            );
-            info = hasRemoteInfo
+          const info =
+            existingInfos.length > 0
               ? existingInfos
-              : [remoteData.remoteInfo, ...existingInfos];
-          }
+              : remoteData.remoteInfo
+                ? [remoteData.remoteInfo]
+                : [];
           if (info.length > 0) idToRemoteMap[id] = info;
         }
         return idToRemoteMap;
@@ -271,61 +266,44 @@ export default function () {
         webpackRequire: runtimeRequire,
       }),
     );
-    const initConsumeShareScopes = (moduleIds) => {
-      if (!Array.isArray(moduleIds) || moduleIds.length === 0) {
-        return [];
-      }
+    const initializeConsumeShareScopes = (moduleIds) => {
+      if (!moduleIds?.length) return [];
       const initPromises = [];
       const initializedScopes = new Set();
       for (const moduleId of moduleIds) {
-        const consumeData = consumesLoadingModuleToConsumeDataMapping[moduleId];
-        const rawShareScope = consumeData?.shareScope;
-        const initShareScope = Array.isArray(rawShareScope)
-          ? rawShareScope
-          : [rawShareScope || 'default'];
-        const shareScopeKey = JSON.stringify(initShareScope);
-        if (initializedScopes.has(shareScopeKey)) {
-          continue;
-        }
-        initializedScopes.add(shareScopeKey);
-        const initialized = runtimeRequire.I(initShareScope, []);
-        if (initialized && initialized.then) {
-          initPromises.push(initialized);
-        }
+        const shareScope =
+          consumesLoadingModuleToConsumeDataMapping[moduleId]?.shareScope ||
+          'default';
+        const scopeKey = JSON.stringify(
+          Array.isArray(shareScope) ? shareScope : [shareScope],
+        );
+        if (initializedScopes.has(scopeKey)) continue;
+        initializedScopes.add(scopeKey);
+        const initialized = runtimeRequire.I(shareScope, []);
+        if (initialized?.then) initPromises.push(initialized);
       }
       return initPromises;
     };
     override(runtimeRequire.f, 'consumes', (chunkId, promises) => {
-      const runtimeConsumes = () =>
+      const consume = (targetPromises) =>
         runtimeRequire.federation.bundlerRuntime.consumes({
           chunkId,
-          promises,
+          promises: targetPromises,
           chunkMapping: consumesLoadingChunkMapping,
           moduleToHandlerMapping:
             runtimeRequire.federation.consumesLoadingModuleToHandlerMapping,
           installedModules: consumesLoadinginstalledModules,
           webpackRequire: runtimeRequire,
         });
-      const chunkConsumes = consumesLoadingChunkMapping[chunkId];
-      const initPromises = initConsumeShareScopes(chunkConsumes);
-      if (initPromises.length === 0) {
-        return runtimeConsumes();
-      }
+      const initPromises = initializeConsumeShareScopes(
+        consumesLoadingChunkMapping[chunkId],
+      );
+      if (initPromises.length === 0) return consume(promises);
       promises.push(
         Promise.all(initPromises).then(() => {
-          const nestedPromises = [];
-          runtimeRequire.federation.bundlerRuntime.consumes({
-            chunkId,
-            promises: nestedPromises,
-            chunkMapping: consumesLoadingChunkMapping,
-            moduleToHandlerMapping:
-              runtimeRequire.federation.consumesLoadingModuleToHandlerMapping,
-            installedModules: consumesLoadinginstalledModules,
-            webpackRequire: runtimeRequire,
-          });
-          return nestedPromises.length > 0
-            ? Promise.all(nestedPromises)
-            : undefined;
+          const consumePromises = [];
+          consume(consumePromises);
+          return Promise.all(consumePromises);
         }),
       );
     });
@@ -341,14 +319,39 @@ export default function () {
     override(
       runtimeRequire,
       'initContainer',
-      (shareScope, initScope, remoteEntryInitOptions) =>
-        runtimeRequire.federation.bundlerRuntime.initContainerEntry({
-          shareScope,
-          initScope,
-          remoteEntryInitOptions,
-          shareScopeKey: containerShareScope,
-          webpackRequire: runtimeRequire,
-        }),
+      (shareScope, initScope, remoteEntryInitOptions) => {
+        let options = remoteEntryInitOptions;
+        const additionalInitPromises = [];
+        if (options?.shareScopeMap && !Array.isArray(options.shareScopeKeys)) {
+          const primaryScope = options.shareScopeKeys || 'default';
+          const shareScopeKeys = [primaryScope];
+          for (const scope of Object.keys(
+            initializeSharingScopeToInitDataMapping,
+          )) {
+            if (scope === primaryScope) continue;
+            shareScopeKeys.push(scope);
+            additionalInitPromises.push(
+              ...runtimeRequire.federation.instance.initializeSharing(scope, {
+                from: 'build',
+                strategy:
+                  runtimeRequire.federation.instance.options.shareStrategy,
+              }),
+            );
+          }
+          options = Object.assign({}, options, { shareScopeKeys });
+        }
+        const init = () =>
+          runtimeRequire.federation.bundlerRuntime.initContainerEntry({
+            shareScope,
+            initScope,
+            remoteEntryInitOptions: options,
+            shareScopeKey: containerShareScope,
+            webpackRequire: runtimeRequire,
+          });
+        return additionalInitPromises.length > 0
+          ? Promise.all(additionalInitPromises).then(init)
+          : init();
+      },
     );
     override(runtimeRequire, 'getContainer', (module, getScope) => {
       var moduleMap = runtimeRequire.initializeExposesData.moduleMap;
@@ -370,9 +373,6 @@ export default function () {
       });
 
     if (runtimeRequire.consumesLoadingData?.initialConsumes) {
-      initConsumeShareScopes(
-        runtimeRequire.consumesLoadingData.initialConsumes,
-      );
       runtimeRequire.federation.bundlerRuntime.installInitialConsumes({
         webpackRequire: runtimeRequire,
         installedModules: consumesLoadinginstalledModules,

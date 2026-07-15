@@ -98,21 +98,26 @@ impl RuntimeModule for RemoteRuntimeModule {
         let external_module = module_graph
           .get_module_by_dependency_id(&dep)
           .expect("should have module");
-        let remote_info = external_module
-          .downcast_ref::<ExternalModule>()
-          .map(|external_module| {
-            let external_type = external_module.get_external_type().as_str();
-            let name = if external_type == "script" {
-              extract_url_and_global(external_module.get_request().primary())
-                .map_or("", |url_and_global| url_and_global.global)
-            } else {
-              ""
-            };
-            RemoteInfo {
-              external_type,
-              name,
-            }
-          });
+        let remote_info = self
+          .enhanced
+          .then(|| {
+            external_module
+              .downcast_ref::<ExternalModule>()
+              .map(|external_module| {
+                let external_type = external_module.get_external_type().as_str();
+                let name = if external_type == "script" {
+                  extract_url_and_global(external_module.get_request().primary())
+                    .map_or("", |url_and_global| url_and_global.global)
+                } else {
+                  ""
+                };
+                RemoteInfo {
+                  external_type,
+                  name,
+                }
+              })
+          })
+          .flatten();
         let external_module_id = ChunkGraph::get_module_id(
           &compilation.module_ids_artifact,
           external_module.identifier(),
@@ -174,6 +179,7 @@ struct RemoteData<'a> {
   name: &'a str,
   external_module_id: &'a ModuleId,
   remote_name: &'a str,
+  #[serde(skip_serializing_if = "Option::is_none")]
   remote_info: Option<RemoteInfo<'a>>,
 }
 

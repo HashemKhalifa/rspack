@@ -17,8 +17,8 @@ import {
   type SharedContainerPluginOptions,
 } from './SharedContainerPlugin';
 import { SharedUsedExportsOptimizerPlugin } from './SharedUsedExportsOptimizerPlugin';
-import type { Shared, SharedConfig } from './SharePlugin';
-import { encodeName, isRequiredVersion } from './utils';
+import type { ShareScope, Shared, SharedConfig } from './SharePlugin';
+import { encodeName, isRequiredVersion, resolveShareKey } from './utils';
 
 const VIRTUAL_ENTRY = './virtual-entry.js';
 const VIRTUAL_ENTRY_NAME = 'virtual-entry';
@@ -52,6 +52,7 @@ export interface IndependentSharePluginOptions {
   plugins?: Plugins;
   treeShaking?: boolean;
   manifest?: ModuleFederationManifestPluginOptions;
+  shareScope?: ShareScope;
   injectTreeShakingUsedExports?: boolean;
   treeShakingSharedExcludePlugins?: string[];
   onBuildAssets?: (buildAssets: ShareFallback) => void;
@@ -61,16 +62,16 @@ export interface IndependentSharePluginOptions {
 export type ShareFallback = Record<string, [string, string, string][]>;
 
 class VirtualEntryPlugin {
-  sharedOptions: [string, SharedConfig][];
+  requests: string[];
   collectShared = false;
-  constructor(sharedOptions: [string, SharedConfig][], collectShared: boolean) {
-    this.sharedOptions = sharedOptions;
+  constructor(requests: string[], collectShared: boolean) {
+    this.requests = requests;
     this.collectShared = collectShared;
   }
   createEntry() {
-    const { sharedOptions, collectShared } = this;
-    const entryContent = sharedOptions.reduce<string>((acc, cur, index) => {
-      const importLine = `import shared_${index} from '${cur[0]}';\n`;
+    const { requests, collectShared } = this;
+    const entryContent = requests.reduce<string>((acc, request, index) => {
+      const importLine = `import shared_${index} from '${request}';\n`;
       // Always mark the import as used to prevent tree-shaking removal
       // Optional console for debugging: reference the variable, not a string
       const logLine = collectShared ? `console.log(shared_${index});\n` : '';
@@ -122,12 +123,49 @@ const resolveOutputDir = (outputDir: string, shareName?: string) => {
 const getShareRequests = (
   shareRequestsMap: ShareRequestsMap,
   shareName: string,
+  shareConfig: SharedConfig,
+  rootShareScope: ShareScope = 'default',
 ) =>
   Array.from(
     new Map(
-      (shareRequestsMap[shareName]?.requests || []).map(
-        ([request, version]) => [version, [request, version] as const],
-      ),
+      (() => {
+        const entry =
+          shareRequestsMap[resolveShareKey(shareConfig.shareKey, shareName)];
+        const variants =
+          entry?.variants ||
+          (entry
+            ? [
+                {
+                  shareScope: entry.shareScope,
+                  layer: undefined,
+                  requests: entry.requests,
+                },
+              ]
+            : []);
+        const expectedScope = shareConfig.shareScope || rootShareScope;
+        const expectedScopes = Array.isArray(expectedScope)
+          ? expectedScope
+          : [expectedScope];
+        const matchesScope = (shareScope: ShareScope) => {
+          const scopes = Array.isArray(shareScope) ? shareScope : [shareScope];
+          return (
+            scopes.length === expectedScopes.length &&
+            scopes.every((scope, index) => scope === expectedScopes[index])
+          );
+        };
+        const exact = variants.filter(
+          ({ layer, shareScope }) =>
+            layer === shareConfig.layer && matchesScope(shareScope),
+        );
+        const selected =
+          exact.length > 0 || shareConfig.layer === undefined
+            ? exact
+            : variants.filter(
+                ({ layer, shareScope }) =>
+                  layer === undefined && matchesScope(shareScope),
+              );
+        return selected.flatMap(({ requests }) => requests);
+      })().map(([request, version]) => [version, [request, version] as const]),
     ).values(),
   );
 
@@ -140,6 +178,7 @@ export class IndependentSharedPlugin {
   plugins: Plugins;
   treeShaking?: boolean;
   manifest?: ModuleFederationManifestPluginOptions;
+  shareScope: ShareScope;
   buildAssets: ShareFallback = {};
   injectTreeShakingUsedExports?: boolean;
   treeShakingSharedExcludePlugins?: string[];
@@ -154,6 +193,7 @@ export class IndependentSharedPlugin {
       shared,
       name,
       manifest,
+      shareScope,
       injectTreeShakingUsedExports,
       library,
       treeShakingSharedExcludePlugins,
@@ -165,6 +205,7 @@ export class IndependentSharedPlugin {
     this.plugins = plugins || [];
     this.treeShaking = treeShaking;
     this.manifest = manifest;
+    this.shareScope = shareScope || 'default';
     this.injectTreeShakingUsedExports = injectTreeShakingUsedExports ?? true;
     this.library = library;
     this.treeShakingSharedExcludePlugins =
@@ -199,7 +240,7 @@ export class IndependentSharedPlugin {
     const { manifest } = this;
     const collectSharedEntryPlugin = new CollectSharedEntryPlugin({
       sharedOptions: this.sharedOptions,
-      shareScope: 'default',
+      shareScope: this.shareScope,
     });
 
     collectSharedEntryPlugin.apply(compiler);
@@ -290,13 +331,22 @@ export class IndependentSharedPlugin {
       const sharedConfig = sharedOptions.find(
         ([name]) => name === shareName,
       )?.[1];
-      const shareRequests = getShareRequests(shareRequestsMap, shareName);
+      const resolvedShareName = resolveShareKey(
+        shareConfig.shareKey,
+        shareName,
+      );
+      const shareRequests = getShareRequests(
+        shareRequestsMap,
+        shareName,
+        shareConfig,
+        this.shareScope,
+      );
 
       shareRequests.forEach(([request, version]) => {
         const sharedContainerPlugin = new SharedContainerPlugin({
           mfName: `${mfName}_${treeShaking ? 't' : 'f'}`,
           library,
-          shareName,
+          shareName: resolvedShareName,
           version,
           request,
           independentShareFileName: sharedConfig?.treeShaking?.filename,
@@ -304,9 +354,9 @@ export class IndependentSharedPlugin {
         const [shareFileName, globalName, sharedVersion] =
           sharedContainerPlugin.getData();
         if (typeof shareFileName === 'string') {
-          buildAssets[shareName] ||= [];
-          buildAssets[shareName].push([
-            join(resolveOutputDir(outputDir, shareName), shareFileName),
+          buildAssets[resolvedShareName] ||= [];
+          buildAssets[resolvedShareName].push([
+            join(resolveOutputDir(outputDir, resolvedShareName), shareFileName),
             sharedVersion,
             globalName,
           ]);
@@ -329,7 +379,16 @@ export class IndependentSharedPlugin {
         if (!shareConfig.treeShaking || shareConfig.import === false) {
           return;
         }
-        const shareRequests = getShareRequests(shareRequestsMap, shareName);
+        const shareRequests = getShareRequests(
+          shareRequestsMap,
+          shareName,
+          shareConfig,
+          this.shareScope,
+        );
+        const resolvedShareName = resolveShareKey(
+          shareConfig.shareKey,
+          shareName,
+        );
         await Promise.all(
           shareRequests.map(async ([request, version]) => {
             const sharedConfig = sharedOptions.find(
@@ -338,7 +397,7 @@ export class IndependentSharedPlugin {
             await this.createIndependentCompiler(parentCompiler, {
               shareRequestsMap,
               currentShare: {
-                shareName,
+                shareName: resolvedShareName,
                 version,
                 request,
                 independentShareFileName: sharedConfig?.treeShaking?.filename,
@@ -415,6 +474,7 @@ export class IndependentSharedPlugin {
               eager: options.eager,
             },
           })),
+        shareScope: this.shareScope,
         enhanced: true,
       }),
     );
@@ -424,10 +484,21 @@ export class IndependentSharedPlugin {
         new SharedUsedExportsOptimizerPlugin(
           sharedOptions,
           this.injectTreeShakingUsedExports,
+          undefined,
+          this.shareScope,
         ),
       );
     }
-    finalPlugins.push(new VirtualEntryPlugin(sharedOptions, false));
+    finalPlugins.push(
+      new VirtualEntryPlugin(
+        sharedOptions.map(([key, options]) =>
+          extraOptions.currentShare.shareName === (options.shareKey || key)
+            ? extraOptions.currentShare.request
+            : key,
+        ),
+        false,
+      ),
+    );
     const fullOutputDir = resolve(
       parentCompiler.outputPath,
       outputDirWithShareName,

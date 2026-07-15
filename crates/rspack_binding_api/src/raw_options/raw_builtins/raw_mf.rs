@@ -223,7 +223,10 @@ impl From<RawConsumeSharedPluginOptions> for ConsumeSharedPluginOptions {
 #[derive(Debug)]
 #[napi(object)]
 pub struct RawOptimizeSharedConfig {
+  pub request: String,
+  pub issuer_layer: Option<String>,
   pub share_key: String,
+  pub share_scope: Either<String, Vec<String>>,
   pub tree_shaking: bool,
   pub used_exports: Option<Vec<String>>,
   pub layer: Option<String>,
@@ -232,7 +235,10 @@ pub struct RawOptimizeSharedConfig {
 impl From<RawOptimizeSharedConfig> for OptimizeSharedConfig {
   fn from(value: RawOptimizeSharedConfig) -> Self {
     Self {
+      request: value.request,
+      issuer_layer: value.issuer_layer,
       share_key: value.share_key,
+      share_scope: into_share_scope(value.share_scope),
       tree_shaking: value.tree_shaking,
       used_exports: value.used_exports.unwrap_or_default(),
       layer: value.layer,
@@ -379,6 +385,7 @@ pub struct RawRemoteAliasTarget {
 pub struct RawManifestExposeOption {
   pub path: String,
   pub name: String,
+  pub layer: Option<String>,
 }
 
 #[derive(Debug)]
@@ -387,6 +394,7 @@ pub struct RawManifestSharedOption {
   pub name: String,
   pub version: Option<String>,
   pub required_version: Option<String>,
+  pub share_scope: Either<String, Vec<String>>,
   pub layer: Option<String>,
   pub singleton: Option<bool>,
 }
@@ -446,6 +454,7 @@ impl From<RawModuleFederationManifestPluginOptions> for ModuleFederationManifest
         .map(|expose| ManifestExposeOption {
           path: expose.path,
           name: expose.name,
+          layer: expose.layer,
         })
         .collect(),
       shared: value
@@ -456,6 +465,7 @@ impl From<RawModuleFederationManifestPluginOptions> for ModuleFederationManifest
           name: shared.name,
           version: shared.version,
           required_version: shared.required_version,
+          share_scope: into_share_scope(shared.share_scope),
           layer: shared.layer,
           singleton: shared.singleton,
         })

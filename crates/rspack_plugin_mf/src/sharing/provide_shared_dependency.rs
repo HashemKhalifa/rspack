@@ -40,8 +40,8 @@ impl ProvideSharedDependency {
     tree_shaking_mode: Option<String>,
   ) -> Self {
     let resource_identifier = format!(
-      "provide module ({}){} {} as {} @ {} {}",
-      share_scope.key(),
+      "provide module {}{} {} as {} @ {} {}",
+      share_scope.identifier_fragment(),
       layer
         .as_ref()
         .map(|layer| format!(" ({layer})"))

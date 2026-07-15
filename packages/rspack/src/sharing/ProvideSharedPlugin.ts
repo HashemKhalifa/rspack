@@ -9,7 +9,7 @@ import {
 } from '../builtin-plugin/base';
 import type { Compiler } from '../Compiler';
 import { parseOptions } from '../container/options';
-import type { ShareScope } from './SharePlugin';
+import { normalizeShareScope, type ShareScope } from './SharePlugin';
 import { ShareRuntimePlugin } from './ShareRuntimePlugin';
 
 export type ProvideSharedPluginOptions<Enhanced extends boolean = false> = {
@@ -57,19 +57,38 @@ export function normalizeProvideShareOptions<Enhanced extends boolean = false>(
       return {
         shareKey: item,
         version: undefined,
-        shareScope: shareScope || 'default',
+        shareScope: normalizeShareScope(
+          shareScope || 'default',
+          !!enhanced,
+          'ProvideSharedPlugin',
+        ),
         eager: false,
       };
     },
     (item) => {
+      const enhancedItem = item as ProvidesConfig<true>;
+      if (!enhanced) {
+        const unsupported = ['request', 'layer'].find(
+          (field) =>
+            enhancedItem[field as keyof ProvidesConfig<true>] !== undefined,
+        );
+        if (unsupported) {
+          throw new Error(
+            `[ProvideSharedPlugin] ${unsupported} requires enhanced=true`,
+          );
+        }
+      }
       const raw = {
         shareKey: item.shareKey,
         version: item.version,
-        shareScope: item.shareScope || shareScope || 'default',
+        shareScope: normalizeShareScope(
+          item.shareScope || shareScope || 'default',
+          !!enhanced,
+          'ProvideSharedPlugin',
+        ),
         eager: !!item.eager,
       };
       if (enhanced) {
-        const enhancedItem = item as ProvidesConfig<true>;
         return {
           ...raw,
           layer: enhancedItem.layer,
