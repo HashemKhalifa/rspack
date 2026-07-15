@@ -1,4 +1,4 @@
-const { ModuleFederationPlugin } = require("@rspack/core").container;
+const { ModuleFederationPlugin } = require('@rspack/core').container;
 
 const common = {
   name: 'container_b',

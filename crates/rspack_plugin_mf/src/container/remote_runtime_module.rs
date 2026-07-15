@@ -104,8 +104,7 @@ impl RuntimeModule for RemoteRuntimeModule {
             let external_type = external_module.get_external_type().as_str();
             let name = if external_type == "script" {
               extract_url_and_global(external_module.get_request().primary())
-                .map(|url_and_global| url_and_global.global)
-                .unwrap_or("")
+                .map_or("", |url_and_global| url_and_global.global)
             } else {
               ""
             };
