@@ -2,7 +2,7 @@ use rayon::prelude::*;
 use rspack_collections::{IdentifierLinkedSet, IdentifierMap, IdentifierSet};
 use rspack_core::{
   AsyncModulesArtifact, Compilation, CompilationFinishModules, DependencyType, ExportsInfoArtifact,
-  Logger, ModuleGraph, Plugin,
+  Logger, ModuleGraph, Plugin, SideEffectsStateArtifact,
   incremental::{IncrementalPasses, Mutation, Mutations},
 };
 use rspack_error::Result;
@@ -18,6 +18,7 @@ async fn finish_modules(
   compilation: &Compilation,
   async_modules_artifact: &mut AsyncModulesArtifact,
   _exports_info_artifact: &mut ExportsInfoArtifact,
+  _side_effects_state_artifact: &mut SideEffectsStateArtifact,
 ) -> Result<()> {
   if let Some(mutations) = compilation
     .incremental
@@ -42,7 +43,7 @@ async fn finish_modules(
   let mut async_modules = IdentifierLinkedSet::default();
   for (module_identifier, module) in module_graph.modules() {
     let build_meta = module.build_meta();
-    if build_meta.has_top_level_await {
+    if build_meta.has_top_level_await() {
       async_modules.insert(*module_identifier);
     } else {
       sync_modules.insert(*module_identifier);
@@ -51,7 +52,7 @@ async fn finish_modules(
 
   let mut mutations = compilation
     .incremental
-    .mutations_writeable()
+    .mutations_writable()
     .then(Mutations::default);
 
   set_sync_modules(
@@ -94,7 +95,7 @@ fn set_sync_modules(
   modules: IdentifierLinkedSet,
   mutations: &mut Option<Mutations>,
 ) {
-  let outgoing_connections = modules
+  let mut outgoing_connections = modules
     .iter()
     .par_bridge()
     .map(|mid| {
@@ -112,17 +113,15 @@ fn set_sync_modules(
 
   let mut queue = modules;
   while let Some(module) = queue.pop_front() {
-    if outgoing_connections
-      .get(&module)
-      .cloned()
-      .unwrap_or_else(|| {
-        module_graph
-          .get_outgoing_connections(&module)
-          .filter_map(|con| module_graph.module_identifier_by_dependency_id(&con.dependency_id))
-          .filter(|&out| &module != out)
-          .copied()
-          .collect::<Vec<_>>()
-      })
+    let module_outgoing_connections = outgoing_connections.entry(module).or_insert_with(|| {
+      module_graph
+        .get_outgoing_connections(&module)
+        .filter_map(|con| module_graph.module_identifier_by_dependency_id(&con.dependency_id))
+        .filter(|&out| &module != out)
+        .copied()
+        .collect::<Vec<_>>()
+    });
+    if module_outgoing_connections
       .iter()
       .any(|out| ModuleGraph::is_async(async_modules_artifact, out))
     {

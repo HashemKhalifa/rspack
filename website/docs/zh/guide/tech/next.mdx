@@ -1,3 +1,7 @@
+---
+description: '在 Rspack 中使用Next.js的指南，涵盖环境配置、集成方式、调试要点、开发模式与常见问题处理。'
+---
+
 import { Tabs, Tab, PackageManagerTabs } from '@theme';
 
 # Next.js
@@ -29,9 +33,7 @@ import { Tabs, Tab, PackageManagerTabs } from '@theme';
 import withRspack from 'next-rspack';
 import type { NextConfig } from 'next';
 
-const nextConfig: NextConfig = {
-  /* config options here */
-};
+const nextConfig: NextConfig = {/* config options here */};
 
 export default withRspack(nextConfig);
 ```
@@ -43,9 +45,7 @@ export default withRspack(nextConfig);
 import withRspack from 'next-rspack';
 
 /** @type {import('next').NextConfig} */
-const nextConfig = {
-  /* config options here */
-};
+const nextConfig = {/* config options here */};
 
 export default withRspack(nextConfig);
 ```

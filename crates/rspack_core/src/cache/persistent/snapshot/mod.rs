@@ -6,11 +6,12 @@ use std::sync::Arc;
 
 use rspack_error::Result;
 use rspack_fs::ReadableFileSystem;
+use rspack_parallel::TryFutureConsumer;
 use rspack_paths::{ArcPath, ArcPathSet};
 
 use self::strategy::{StrategyHelper, ValidateResult};
 pub use self::{
-  option::{PathMatcher, SnapshotOptions},
+  option::{PathMatcher, SnapshotOptions, SnapshotStrategyOptions},
   scope::SnapshotScope,
   strategy::Strategy,
 };
@@ -25,7 +26,6 @@ use crate::FutureConsumer;
 pub struct Snapshot {
   options: Arc<SnapshotOptions>,
   fs: Arc<dyn ReadableFileSystem>,
-  storage: Arc<dyn Storage>,
   codec: Arc<CacheCodec>,
 }
 
@@ -33,13 +33,11 @@ impl Snapshot {
   pub fn new(
     options: SnapshotOptions,
     fs: Arc<dyn ReadableFileSystem>,
-    storage: Arc<dyn Storage>,
     codec: Arc<CacheCodec>,
   ) -> Self {
     Self {
       options: Arc::new(options),
       fs,
-      storage,
       codec,
     }
   }
@@ -60,14 +58,39 @@ impl Snapshot {
       return Some(v);
     }
     Some(match scope {
-      SnapshotScope::FILE => helper.file_hash(path).await,
+      SnapshotScope::FILE => {
+        helper
+          .file_strategy(path, options.dependencies_strategy())
+          .await
+      }
       SnapshotScope::MISSING => Strategy::Missing,
-      SnapshotScope::CONTEXT | SnapshotScope::BUILD => helper.dir_hash(path).await,
+      SnapshotScope::CONTEXT => {
+        helper
+          .dir_strategy(path, options.context_dependencies_strategy())
+          .await
+      }
+      SnapshotScope::BUILD => {
+        helper
+          .dir_strategy(path, SnapshotStrategyOptions::hash())
+          .await
+      }
     })
   }
 
+  #[tracing::instrument("Cache::Snapshot::reset", skip_all)]
+  pub fn reset(&self, storage: &mut dyn Storage) {
+    storage.reset(SnapshotScope::FILE.name());
+    storage.reset(SnapshotScope::CONTEXT.name());
+    storage.reset(SnapshotScope::MISSING.name());
+  }
+
   #[tracing::instrument("Cache::Snapshot::add", skip_all)]
-  pub async fn add(&self, scope: SnapshotScope, paths: impl Iterator<Item = ArcPath>) {
+  pub async fn add(
+    &self,
+    storage: &mut dyn Storage,
+    scope: SnapshotScope,
+    paths: impl Iterator<Item = ArcPath>,
+  ) {
     let helper = Arc::new(StrategyHelper::new(self.fs.clone(), self.options.clone()));
     let codec = self.codec.clone();
     // TODO merge package version file
@@ -86,17 +109,20 @@ impl Snapshot {
       })
       .fut_consume(|data| {
         if let Some((key, value)) = data {
-          self.storage.set(scope.name(), key, value);
+          storage.set(scope.name(), key, value);
         }
       })
       .await;
   }
 
-  pub fn remove(&self, scope: SnapshotScope, paths: impl Iterator<Item = ArcPath>) {
+  pub fn remove(
+    &self,
+    storage: &mut dyn Storage,
+    scope: SnapshotScope,
+    paths: impl Iterator<Item = ArcPath>,
+  ) {
     for item in paths {
-      self
-        .storage
-        .remove(scope.name(), item.as_os_str().as_encoded_bytes())
+      storage.remove(scope.name(), item.as_os_str().as_encoded_bytes())
     }
   }
 
@@ -104,6 +130,7 @@ impl Snapshot {
   #[tracing::instrument("Cache::Snapshot::calc_modified_path", skip_all)]
   pub async fn calc_modified_paths(
     &self,
+    storage: &dyn Storage,
     scope: SnapshotScope,
   ) -> Result<(bool, ArcPathSet, ArcPathSet, ArcPathSet)> {
     let mut modified_path = ArcPathSet::default();
@@ -112,7 +139,7 @@ impl Snapshot {
     let helper = Arc::new(StrategyHelper::new(self.fs.clone(), self.options.clone()));
     let codec = self.codec.clone();
 
-    let data = self.storage.load(scope.name()).await?;
+    let data = storage.load(scope.name()).await?;
     let is_hot_start = !data.is_empty();
     data
       .into_iter()
@@ -120,13 +147,15 @@ impl Snapshot {
         let helper = helper.clone();
         let codec = codec.clone();
         async move {
-          let path: ArcPath = codec.decode(&key).expect("should decode success");
-          let strategy: Strategy = codec.decode(&value).expect("should decode success");
-          let validate = helper.validate(&path, &strategy).await;
-          (path, validate)
+          let path = codec.decode::<ArcPath>(&key)?;
+          let validate = match codec.decode::<Strategy>(&value) {
+            Ok(strategy) => helper.validate(&path, &strategy).await,
+            Err(_) => ValidateResult::Modified,
+          };
+          Ok::<_, rspack_error::Error>((path, validate))
         }
       })
-      .fut_consume(|(path, validate)| match validate {
+      .try_fut_consume(|(path, validate)| match validate {
         ValidateResult::Modified => {
           modified_path.insert(path);
         }
@@ -137,7 +166,7 @@ impl Snapshot {
           no_change_path.insert(path);
         }
       })
-      .await;
+      .await?;
 
     Ok((is_hot_start, modified_path, deleted_path, no_change_path))
   }
@@ -164,7 +193,7 @@ mod tests {
   #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
   async fn should_snapshot_work() {
     let fs = Arc::new(MemoryFileSystem::default());
-    let storage = Arc::new(MemoryStorage::default());
+    let mut storage = MemoryStorage::default();
     let codec = Arc::new(CacheCodec::new(None));
     let options = SnapshotOptions::new(
       vec![PathMatcher::String("constant".into())],
@@ -199,10 +228,11 @@ mod tests {
       .await
       .unwrap();
 
-    let snapshot = Snapshot::new(options, fs.clone(), storage, codec);
+    let snapshot = Snapshot::new(options, fs.clone(), codec);
 
     snapshot
       .add(
+        &mut storage,
         SnapshotScope::FILE,
         [
           p!("/file1"),
@@ -226,7 +256,7 @@ mod tests {
       .unwrap();
 
     let (is_hot_start, modified_paths, deleted_paths, no_change_paths) = snapshot
-      .calc_modified_paths(SnapshotScope::FILE)
+      .calc_modified_paths(&storage, SnapshotScope::FILE)
       .await
       .unwrap();
     assert!(is_hot_start);
@@ -244,10 +274,14 @@ mod tests {
     .await
     .unwrap();
     snapshot
-      .add(SnapshotScope::FILE, [p!("/file1")].into_iter())
+      .add(
+        &mut storage,
+        SnapshotScope::FILE,
+        [p!("/file1")].into_iter(),
+      )
       .await;
     let (is_hot_start, modified_paths, deleted_paths, no_change_paths) = snapshot
-      .calc_modified_paths(SnapshotScope::FILE)
+      .calc_modified_paths(&storage, SnapshotScope::FILE)
       .await
       .unwrap();
     assert!(is_hot_start);

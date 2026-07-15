@@ -1,23 +1,27 @@
-const { container } = require("@rspack/core");
+const { container } = require('@rspack/core');
 
 const { ModuleFederationPlugin } = container;
 
 /** @type {import("@rspack/core").Configuration} */
 module.exports = {
+  externals: {
+    fs: 'node-commonjs fs',
+    path: 'node-commonjs path',
+  },
   // entry: './index.js',
-  target:'async-node',
-	optimization:{
-		minimize: true,
-		chunkIds:'named',
-		moduleIds: 'named'
-	},
-	output: {
-		chunkFilename: "[id].js"
-	},
-	plugins: [
-		new ModuleFederationPlugin({
-			name:'tree_shaking_share',
-			manifest: true,
+  target: 'async-node',
+  optimization: {
+    minimize: true,
+    chunkIds: 'named',
+    moduleIds: 'named',
+  },
+  output: {
+    chunkFilename: '[id].js',
+  },
+  plugins: [
+    new ModuleFederationPlugin({
+      name: 'tree_shaking_share',
+      manifest: true,
       runtimePlugins: [require.resolve('./runtime-plugin.js')],
       library: {
         type: 'commonjs-module',
@@ -56,6 +60,6 @@ module.exports = {
           },
         },
       },
-		})
-	]
+    }),
+  ],
 };

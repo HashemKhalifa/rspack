@@ -25,12 +25,15 @@ mod raw_swc_js_minimizer;
 use std::cell::RefCell;
 
 use napi::{
-  Either, Env, Unknown,
+  Either, Env, Unknown, ValueType,
   bindgen_prelude::{ClassInstance, FromNapiValue, JsObjectValue, Object},
 };
 use napi_derive::napi;
 use raw_dll::{RawDllReferenceAgencyPluginOptions, RawFlagAllModulesAsUsedPluginOptions};
-use raw_ids::RawOccurrenceChunkIdsPluginOptions;
+use raw_ids::{
+  RawDeterministicModuleIdsPluginOptions, RawHashedModuleIdsPluginOptions,
+  RawOccurrenceChunkIdsPluginOptions, RawSyncModuleIdsPluginOptions,
+};
 use raw_lightning_css_minimizer::RawLightningCssMinimizerRspackPluginOptions;
 use raw_mf::{
   RawCollectShareEntryPluginOptions, RawModuleFederationManifestPluginOptions,
@@ -41,13 +44,16 @@ use raw_sri::RawSubresourceIntegrityPluginOptions;
 use rspack_core::{BoxPlugin, Plugin, PluginExt};
 use rspack_error::{Result, ToStringResultToRspackResultExt};
 use rspack_ids::{
-  DeterministicChunkIdsPlugin, DeterministicModuleIdsPlugin, NamedChunkIdsPlugin,
-  NamedModuleIdsPlugin, NaturalChunkIdsPlugin, NaturalModuleIdsPlugin, OccurrenceChunkIdsPlugin,
+  DeterministicChunkIdsPlugin, DeterministicModuleIdsPlugin, HashedModuleIdsPlugin,
+  NamedChunkIdsPlugin, NamedModuleIdsPlugin, NaturalChunkIdsPlugin, NaturalModuleIdsPlugin,
+  OccurrenceChunkIdsPlugin, SyncModuleIdsPlugin,
 };
 use rspack_plugin_asset::AssetPlugin;
 use rspack_plugin_banner::BannerPlugin;
 use rspack_plugin_case_sensitive::CaseSensitivePlugin;
-use rspack_plugin_circular_dependencies::CircularDependencyRspackPlugin;
+use rspack_plugin_circular_dependencies::{
+  CircularCheckRspackPlugin, CircularDependencyRspackPlugin, CircularModulesInfoPlugin,
+};
 use rspack_plugin_copy::{CopyRspackPlugin, CopyRspackPluginOptions};
 use rspack_plugin_css::CssPlugin;
 use rspack_plugin_css_chunking::CssChunkingPlugin;
@@ -63,7 +69,8 @@ use rspack_plugin_ensure_chunk_conditions::EnsureChunkConditionsPlugin;
 use rspack_plugin_entry::EntryPlugin;
 use rspack_plugin_esm_library::EsmLibraryPlugin;
 use rspack_plugin_externals::{
-  ExternalsPlugin, electron_target_plugin, http_externals_rspack_plugin, node_target_plugin,
+  EsmNodeTargetPlugin, ExternalsPlugin, css_http_externals_rspack_plugin, electron_target_plugin,
+  http_externals_rspack_plugin, node_target_plugin,
 };
 use rspack_plugin_hmr::HotModuleReplacementPlugin;
 use rspack_plugin_html::HtmlRspackPlugin;
@@ -104,14 +111,15 @@ use rspack_plugin_swc_js_minimizer::SwcJsMinimizerRspackPlugin;
 use rspack_plugin_wasm::{
   AsyncWasmPlugin, FetchCompileAsyncWasmPlugin, enable_wasm_loading_plugin,
 };
-use rspack_plugin_web_worker_template::web_worker_template_plugin;
 use rspack_plugin_worker::WorkerPlugin;
 use rustc_hash::FxHashMap as HashMap;
 
 use self::{
   raw_banner::RawBannerPluginOptions,
   raw_bundle_info::{RawBundlerInfoModeWrapper, RawBundlerInfoPluginOptions},
-  raw_circular_dependency::RawCircularDependencyRspackPluginOptions,
+  raw_circular_dependency::{
+    RawCircularCheckRspackPluginOptions, RawCircularDependencyRspackPluginOptions,
+  },
   raw_context_replacement::RawContextReplacementPluginOptions,
   raw_copy::RawCopyRspackPluginOptions,
   raw_css_chunking::RawCssChunkingPluginOptions,
@@ -139,7 +147,8 @@ use crate::{
   raw_options::{
     RawDynamicEntryPluginOptions, RawEvalDevToolModulePluginOptions, RawExternalItemWrapper,
     RawExternalsPluginOptions, RawHttpExternalsRspackPluginOptions, RawSplitChunksOptions,
-    SourceMapDevToolPluginOptions, raw_builtins::raw_esm_lib::RawEsmLibraryPlugin,
+    SourceMapDevToolPluginOptions,
+    raw_builtins::raw_esm_lib::{RawEnableLibraryPluginOptions, RawEsmLibraryPlugin},
   },
   rslib::RawRslibPluginOptions,
 };
@@ -158,6 +167,7 @@ pub enum BuiltinPluginName {
   DynamicEntryPlugin,
   ExternalsPlugin,
   NodeTargetPlugin,
+  EsmNodeTargetPlugin,
   ElectronTargetPlugin,
   EnableChunkLoadingPlugin,
   EnableLibraryPlugin,
@@ -171,7 +181,6 @@ pub enum BuiltinPluginName {
   HotModuleReplacementPlugin,
   LimitChunkCountPlugin,
   WorkerPlugin,
-  WebWorkerTemplatePlugin,
   MergeDuplicateChunksPlugin,
   SplitChunksPlugin,
   RemoveDuplicateModulesPlugin,
@@ -188,6 +197,8 @@ pub enum BuiltinPluginName {
   NamedModuleIdsPlugin,
   NaturalModuleIdsPlugin,
   DeterministicModuleIdsPlugin,
+  SyncModuleIdsPlugin,
+  HashedModuleIdsPlugin,
   NaturalChunkIdsPlugin,
   NamedChunkIdsPlugin,
   DeterministicChunkIdsPlugin,
@@ -227,6 +238,7 @@ pub enum BuiltinPluginName {
 
   // rspack specific plugins
   // naming format follow XxxRspackPlugin
+  CssHttpExternalsRspackPlugin,
   HttpExternalsRspackPlugin,
   CopyRspackPlugin,
   HtmlRspackPlugin,
@@ -238,6 +250,8 @@ pub enum BuiltinPluginName {
   RsdoctorPlugin,
   RstestPlugin,
   RslibPlugin,
+  CircularModulesInfoPlugin,
+  CircularCheckRspackPlugin,
   CircularDependencyRspackPlugin,
   URLPlugin,
 
@@ -389,15 +403,21 @@ impl<'a> BuiltinPlugin<'a> {
           .map(|e| RawExternalItemWrapper(e).try_into())
           .collect::<Result<Vec<_>>>()
           .map_err(|report| napi::Error::from_reason(report.to_string()))?;
-        let plugin = ExternalsPlugin::new(
+        let plugin = ExternalsPlugin::new_with_options(
           plugin_options.r#type,
           externals,
           plugin_options.place_in_initial,
+          plugin_options
+            .fallback_type
+            .unwrap_or_else(|| "commonjs".to_string()),
         )
         .boxed();
         plugins.push(plugin);
       }
       BuiltinPluginName::NodeTargetPlugin => plugins.push(node_target_plugin()),
+      BuiltinPluginName::EsmNodeTargetPlugin => {
+        plugins.push(EsmNodeTargetPlugin::new().boxed());
+      }
       BuiltinPluginName::ElectronTargetPlugin => {
         let context = downcast_into::<String>(self.options)
           .map_err(|report| napi::Error::from_reason(report.to_string()))?;
@@ -409,9 +429,14 @@ impl<'a> BuiltinPlugin<'a> {
         enable_chunk_loading_plugin(chunk_loading_type.as_str().into(), plugins);
       }
       BuiltinPluginName::EnableLibraryPlugin => {
-        let library_type = downcast_into::<String>(self.options)
+        let options = downcast_into::<RawEnableLibraryPluginOptions>(self.options)
           .map_err(|report| napi::Error::from_reason(report.to_string()))?;
-        enable_library_plugin(library_type, plugins);
+        enable_library_plugin(
+          options.library_type,
+          options.preserve_modules.as_deref().map(Into::into),
+          options.split_chunks.map(Into::into),
+          plugins,
+        );
       }
       BuiltinPluginName::EnableWasmLoadingPlugin => {
         let wasm_loading_type = downcast_into::<String>(self.options)
@@ -460,9 +485,6 @@ impl<'a> BuiltinPlugin<'a> {
       }
       BuiltinPluginName::WorkerPlugin => {
         plugins.push(WorkerPlugin::default().boxed());
-      }
-      BuiltinPluginName::WebWorkerTemplatePlugin => {
-        web_worker_template_plugin(plugins);
       }
       BuiltinPluginName::MergeDuplicateChunksPlugin => {
         plugins.push(MergeDuplicateChunksPlugin::default().boxed());
@@ -555,9 +577,30 @@ impl<'a> BuiltinPlugin<'a> {
       BuiltinPluginName::NaturalModuleIdsPlugin => {
         plugins.push(NaturalModuleIdsPlugin::default().boxed())
       }
-      BuiltinPluginName::DeterministicModuleIdsPlugin => {
-        plugins.push(DeterministicModuleIdsPlugin::default().boxed())
-      }
+      BuiltinPluginName::DeterministicModuleIdsPlugin => plugins.push(
+        DeterministicModuleIdsPlugin::new(
+          downcast_into::<RawDeterministicModuleIdsPluginOptions>(self.options)
+            .map_err(|report| napi::Error::from_reason(report.to_string()))?
+            .into(),
+        )
+        .boxed(),
+      ),
+      BuiltinPluginName::SyncModuleIdsPlugin => plugins.push(
+        SyncModuleIdsPlugin::new(
+          downcast_into::<RawSyncModuleIdsPluginOptions>(self.options)
+            .map_err(|report| napi::Error::from_reason(report.to_string()))?
+            .into(),
+        )
+        .boxed(),
+      ),
+      BuiltinPluginName::HashedModuleIdsPlugin => plugins.push(
+        HashedModuleIdsPlugin::new(
+          downcast_into::<RawHashedModuleIdsPluginOptions>(self.options)
+            .map_err(|report| napi::Error::from_reason(report.to_string()))?
+            .into(),
+        )
+        .boxed(),
+      ),
       BuiltinPluginName::NaturalChunkIdsPlugin => {
         plugins.push(NaturalChunkIdsPlugin::default().boxed())
       }
@@ -612,8 +655,7 @@ impl<'a> BuiltinPlugin<'a> {
             .into();
         plugins.push(
           SourceMapDevToolModuleOptionsPlugin::new(SourceMapDevToolModuleOptionsPluginOptions {
-            module: options.module,
-            cheap: !options.columns,
+            source_map_kind: options.module_source_map_kind(),
           })
           .boxed(),
         );
@@ -626,8 +668,7 @@ impl<'a> BuiltinPlugin<'a> {
             .into();
         plugins.push(
           SourceMapDevToolModuleOptionsPlugin::new(SourceMapDevToolModuleOptionsPluginOptions {
-            module: options.module,
-            cheap: !options.columns,
+            source_map_kind: options.module_source_map_kind(),
           })
           .boxed(),
         );
@@ -644,7 +685,13 @@ impl<'a> BuiltinPlugin<'a> {
         );
       }
       BuiltinPluginName::SideEffectsFlagPlugin => {
-        plugins.push(SideEffectsFlagPlugin::default().boxed())
+        let analyze_side_effects_free = match self.options.get_type()? {
+          // Keep compatibility with older JS wrappers that serialized this builtin as `{}`.
+          ValueType::Object => false,
+          _ => downcast_into::<bool>(self.options)
+            .map_err(|report| napi::Error::from_reason(report.to_string()))?,
+        };
+        plugins.push(SideEffectsFlagPlugin::new(analyze_side_effects_free).boxed());
       }
       BuiltinPluginName::FlagDependencyExportsPlugin => {
         plugins.push(FlagDependencyExportsPlugin::default().boxed())
@@ -690,10 +737,13 @@ impl<'a> BuiltinPlugin<'a> {
       }
 
       // rspack specific plugins
+      BuiltinPluginName::CssHttpExternalsRspackPlugin => {
+        plugins.push(css_http_externals_rspack_plugin());
+      }
       BuiltinPluginName::HttpExternalsRspackPlugin => {
         let plugin_options = downcast_into::<RawHttpExternalsRspackPluginOptions>(self.options)
           .map_err(|report| napi::Error::from_reason(report.to_string()))?;
-        let plugin = http_externals_rspack_plugin(plugin_options.css, plugin_options.web_async);
+        let plugin = http_externals_rspack_plugin(plugin_options.web_async);
         plugins.push(plugin);
       }
       BuiltinPluginName::SwcJsMinimizerRspackPlugin => {
@@ -764,6 +814,17 @@ impl<'a> BuiltinPlugin<'a> {
         )
         .boxed(),
       ),
+      BuiltinPluginName::CircularCheckRspackPlugin => plugins.push(
+        CircularCheckRspackPlugin::new(
+          downcast_into::<RawCircularCheckRspackPluginOptions>(self.options)
+            .map_err(|report| napi::Error::from_reason(report.to_string()))?
+            .into(),
+        )
+        .boxed(),
+      ),
+      BuiltinPluginName::CircularModulesInfoPlugin => {
+        plugins.push(CircularModulesInfoPlugin::default().boxed())
+      }
       BuiltinPluginName::JsLoaderRspackPlugin => {
         // Set the compiler._runLoader property on the JsObject to ensure that the runLoader
         // is not garbage collected by JS while the stats Object holds a reference to JsLoaderPlugin.
@@ -782,6 +843,7 @@ impl<'a> BuiltinPlugin<'a> {
             options.entries,
             options.imports,
             options.client,
+            options.reserved_externals,
           )) as Box<dyn Plugin>,
         )
       }
@@ -848,6 +910,7 @@ impl<'a> BuiltinPlugin<'a> {
             .map_err(|report| napi::Error::from_reason(report.to_string()))?;
           let options = raw_options.into();
           plugins.push(RstestPlugin::new(options).boxed());
+          plugins.extend(rspack_plugin_rstest::builtin_plugins());
         }
       }
       BuiltinPluginName::RslibPlugin => {
@@ -879,14 +942,20 @@ impl<'a> BuiltinPlugin<'a> {
         plugins.push(CssChunkingPlugin::new(options.into()).boxed());
       }
       BuiltinPluginName::RscServerPlugin => {
-        let options = &downcast_into::<JsRscServerPluginOptions>(self.options)
-          .map_err(|report| napi::Error::from_reason(report.to_string()))?;
-        plugins.push(RscServerPlugin::new(options.try_into()?).boxed());
+        #[cfg(not(feature = "browser"))]
+        {
+          let options = downcast_into::<JsRscServerPluginOptions>(self.options)
+            .map_err(|report| napi::Error::from_reason(report.to_string()))?;
+          plugins.push(RscServerPlugin::new(options.try_into()?).boxed());
+        }
       }
       BuiltinPluginName::RscClientPlugin => {
-        let options = &downcast_into::<JsRscClientPluginOptions>(self.options)
-          .map_err(|report| napi::Error::from_reason(report.to_string()))?;
-        plugins.push(RscClientPlugin::new(options.into()).boxed());
+        #[cfg(not(feature = "browser"))]
+        {
+          let options = &downcast_into::<JsRscClientPluginOptions>(self.options)
+            .map_err(|report| napi::Error::from_reason(report.to_string()))?;
+          plugins.push(RscClientPlugin::new(options.into()).boxed());
+        }
       }
     }
     Ok(())

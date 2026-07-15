@@ -3,7 +3,7 @@
   Author Natsu @xiaoxiaojx
 */
 
-use std::{borrow::Cow, collections::HashSet, path::PathBuf, sync::Arc};
+use std::{borrow::Cow, path::PathBuf, sync::Arc};
 
 use cow_utils::CowUtils;
 use futures::stream::{FuturesOrdered, StreamExt};
@@ -13,13 +13,14 @@ use rspack_fs::ReadableFileSystem;
 use rspack_paths::{AssertUtf8, Utf8Path, Utf8PathBuf};
 use rspack_sources::SourceMap;
 use rspack_util::{base64, node_path::NodePath};
+use rustc_hash::FxHashSet;
 
 /// Source map extractor result
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ExtractSourceMapResult {
   pub source: String,
-  pub source_map: Option<SourceMap>,
-  pub file_dependencies: Option<HashSet<PathBuf>>,
+  pub source_map: Option<SourceMap<'static>>,
+  pub file_dependencies: Option<FxHashSet<PathBuf>>,
 }
 
 /// Source mapping URL information
@@ -276,7 +277,7 @@ pub async fn extract_source_map(
         file_dependencies: if source_url.is_empty() {
           None
         } else {
-          let mut set = HashSet::new();
+          let mut set = FxHashSet::default();
           set.insert(PathBuf::from(source_url));
           Some(set)
         },
@@ -285,8 +286,8 @@ pub async fn extract_source_map(
   };
 
   // Create SourceMap directly from JSON
-  let mut source_map =
-    SourceMap::from_json(content).map_err(|e| format!("Failed to parse source map: {e}"))?;
+  let mut source_map = SourceMap::from_json(content.to_string())
+    .map_err(|e| format!("Failed to parse source map: {e}"))?;
 
   let context = if !source_url.is_empty() {
     Utf8Path::new(&source_url).parent().unwrap_or(base_context)
@@ -298,13 +299,17 @@ pub async fn extract_source_map(
   let mut file_dependencies = if source_url.is_empty() {
     None
   } else {
-    let mut set = HashSet::new();
+    let mut set = FxHashSet::default();
     set.insert(PathBuf::from(&source_url));
     Some(set)
   };
 
   // Get sources from SourceMap and take ownership
-  let sources = source_map.sources().to_vec();
+  let sources = source_map
+    .sources()
+    .iter()
+    .map(|source| source.to_string())
+    .collect::<Vec<_>>();
   let source_root = source_map.source_root().map(|s| s.to_string());
 
   // Pre-collect all source content to avoid borrowing issues
@@ -316,7 +321,7 @@ pub async fn extract_source_map(
   let mut futures = FuturesOrdered::new();
 
   // Use zip to consume both vectors without extra cloning
-  for (source, original_content) in sources.into_iter().zip(source_contents.into_iter()) {
+  for (source, original_content) in sources.into_iter().zip(source_contents) {
     let skip_reading = original_content.is_some();
     let source_root = source_root.clone();
     let context = context.to_path_buf();
@@ -343,7 +348,7 @@ pub async fn extract_source_map(
       if let Some(ref mut deps) = file_dependencies {
         deps.insert(PathBuf::from(&source_url_result));
       } else {
-        let mut set = HashSet::new();
+        let mut set = FxHashSet::default();
         set.insert(PathBuf::from(&source_url_result));
         file_dependencies = Some(set);
       }
@@ -353,16 +358,16 @@ pub async fn extract_source_map(
   }
 
   // Build the final SourceMap using setter methods - consume resolved_sources to avoid cloning
-  let (sources_vec, sources_content_vec): (Vec<String>, Vec<Arc<str>>) = resolved_sources
+  let (sources_vec, sources_content_vec): (Vec<String>, Vec<Cow<'_, str>>) = resolved_sources
     .into_iter()
-    .map(|(url, content)| (url, Arc::from(content.unwrap_or_default())))
+    .map(|(url, content)| (url, Cow::Owned(content.unwrap_or_default())))
     .unzip();
 
   source_map.set_sources(sources_vec);
   source_map.set_sources_content(sources_content_vec);
 
   // Remove source_root as per original logic
-  source_map.set_source_root(None::<String>);
+  source_map.set_source_root(None);
 
   // Optimize string replacement to avoid unnecessary cloning
   let new_source = if replacement_string.is_empty() {

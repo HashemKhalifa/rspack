@@ -3,12 +3,13 @@ import { getLightningcssLoaderOptions } from '../builtin-loader/lightningcss';
 import { getSwcLoaderOptions } from '../builtin-loader/swc';
 import type { Compilation } from '../Compilation';
 import type { Compiler } from '../Compiler';
-import { type LoaderObject, parsePathQueryFragment } from '../loader-runner';
+import type { LoaderObject } from '../loader-runner';
 import type { Logger } from '../logging/Logger';
 import type { Module } from '../Module';
 import type { ResolveRequest } from '../Resolver';
 import { isNil } from '../util';
 import type Hash from '../util/hash';
+import { parseResource } from '../util/identifier';
 import type { RspackOptionsNormalized } from './normalization';
 import type {
   Mode,
@@ -216,7 +217,7 @@ export interface LoaderContext<OptionsType = {}> {
    */
   request: string;
   /**
-   * An array of all the loaders. It is writeable in the pitch phase.
+   * An array of all the loaders. It is writable in the pitch phase.
    * loaders = [{request: string, path: string, query: string, module: function}]
    *
    * In the example:
@@ -543,7 +544,7 @@ function resolveStringifyLoaders(
   compiler: Compiler,
   isBuiltin: boolean,
 ) {
-  const obj = parsePathQueryFragment(use.loader);
+  const obj = parseResource(use.loader);
   let ident = use.ident;
 
   if (use.options === null) {

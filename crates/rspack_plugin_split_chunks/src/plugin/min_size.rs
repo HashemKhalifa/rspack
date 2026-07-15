@@ -8,7 +8,7 @@ use crate::{
 };
 
 pub trait ModulesContainer {
-  fn get_sizes(&mut self, module_sizes: &ModuleSizes) -> SplitChunkSizes;
+  fn get_sizes(&mut self, module_sizes: &ModuleSizes) -> &SplitChunkSizes;
   fn get_source_types_modules(
     &self,
     source_types: &[SourceType],
@@ -19,7 +19,7 @@ pub trait ModulesContainer {
 }
 
 impl ModulesContainer for ModuleGroup {
-  fn get_sizes(&mut self, module_sizes: &ModuleSizes) -> SplitChunkSizes {
+  fn get_sizes(&mut self, module_sizes: &ModuleSizes) -> &SplitChunkSizes {
     ModuleGroup::get_sizes(self, module_sizes)
   }
 
@@ -41,8 +41,8 @@ impl ModulesContainer for ModuleGroup {
 }
 
 /// Return `true` if the `ModuleGroup` become empty.
-pub(crate) fn remove_min_size_violating_modules(
-  module_group_key: &str,
+pub(crate) fn remove_min_size_violating_modules<T: std::fmt::Display>(
+  module_group_key: &T,
   module_group: &mut ModuleGroup,
   cache_group: &CacheGroup,
   module_sizes: &ModuleSizes,
@@ -143,14 +143,19 @@ impl SplitChunksPlugin {
           module_group,
           cache_group,
           module_sizes,
-        ) || !Self::check_min_size_reduction(
-          &module_group.get_sizes(module_sizes),
-          &cache_group.min_size_reduction,
-          module_group.chunks.len(),
         ) {
           Some(module_group_key.clone())
         } else {
-          None
+          let chunks_len = module_group.chunks.len();
+          if !Self::check_min_size_reduction(
+            module_group.get_sizes(module_sizes),
+            &cache_group.min_size_reduction,
+            chunks_len,
+          ) {
+            Some(module_group_key.clone())
+          } else {
+            None
+          }
         }
       })
       .collect::<Vec<_>>();

@@ -1,3 +1,7 @@
+---
+description: '你可以在 @rspack/core 和 @rspack/cli 的 npm 版本页面查看所有已发布的版本。'
+---
+
 # Releasing
 
 Rspack 的版本发布通过 GitHub Actions 自动完成。
@@ -14,8 +18,10 @@ Latest 是最新的稳定版本，遵循 Semantic Versioning 语义化版本号�
 
 - x86_64-unknown-linux-gnu
 - aarch64-unknown-linux-gnu
+- riscv64gc-unknown-linux-gnu
 - x86_64-unknown-linux-musl
 - aarch64-unknown-linux-musl
+- riscv64gc-unknown-linux-musl
 - i686-pc-windows-msvc
 - x86_64-pc-windows-msvc
 - aarch64-pc-windows-msvc
@@ -61,7 +67,8 @@ git push origin release/vx.y.z
    - [Release Full](https://github.com/web-infra-dev/rspack/actions/workflows/release.yml): 发布 npm 包到 registry
    - [Release Crates](https://github.com/web-infra-dev/rspack/actions/workflows/release-crates.yml): 发布 Rust crates 到 crates.io
 7. 发布完成后，合并 PR 到 `main` 分支。
-8. 生成 GitHub [release note](https://github.com/web-infra-dev/rspack/releases)，补充 highlights 信息。
+8. 使用 `create-draft-release-notes` skill 创建 GitHub [release note](https://github.com/web-infra-dev/rspack/releases) 草稿。
+9. 检查 release note 草稿，可选补充 release highlights，然后发布。
 
 ## Canary 发布
 

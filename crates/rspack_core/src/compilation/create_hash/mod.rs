@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use rspack_hash::RspackHasher;
 use rustc_hash::FxHashSet;
 
 use super::*;
@@ -128,7 +129,7 @@ pub async fn create_hash(
       .collect()
   };
 
-  let mut compilation_hasher = RspackHash::from(&compilation.options.output);
+  let mut compilation_hasher = RspackHasher::from(&compilation.options.output);
 
   fn try_process_chunk_hash_results(
     compilation: &mut Compilation,
@@ -163,7 +164,7 @@ pub async fn create_hash(
 
   // create hash for runtime modules in other chunks
   let compilation_ref = &*compilation;
-  let other_chunk_runtime_module_hashes = rspack_futures::scope::<_, Result<_>>(|token| {
+  let other_chunk_runtime_module_hashes = rspack_parallel::scope::<_, Result<_>>(|token| {
     other_chunks
       .iter()
       .flat_map(|chunk| {
@@ -195,7 +196,7 @@ pub async fn create_hash(
 
   // create hash for other chunks
   let compilation_ref = &*compilation;
-  let other_chunks_hash_results = rspack_futures::scope::<_, Result<_>>(|token| {
+  let other_chunks_hash_results = rspack_parallel::scope::<_, Result<_>>(|token| {
     for chunk in other_chunks {
       let s = unsafe { token.used((compilation_ref, chunk, plugin_driver.clone())) };
       s.spawn(|(compilation, chunk, plugin_driver)| async move {
@@ -342,7 +343,7 @@ pub async fn create_hash(
   let start = logger.time("hashing: hash runtime chunks");
   for runtime_chunk_ukey in runtime_chunks {
     let compilation_ref = &*compilation;
-    let runtime_module_hashes = rspack_futures::scope::<_, Result<_>>(|token| {
+    let runtime_module_hashes = rspack_parallel::scope::<_, Result<_>>(|token| {
       compilation
         .build_chunk_graph_artifact
         .chunk_graph
@@ -391,11 +392,21 @@ pub async fn create_hash(
     .chunk_by_ukey
     .values()
     .sorted_unstable_by_key(|chunk| chunk.ukey())
-    .filter_map(|chunk| chunk.hash(&compilation.chunk_hashes_artifact))
-    .for_each(|hash| {
-      hash.hash(&mut compilation_hasher);
+    .for_each(|chunk| {
+      if let Some(hash) = chunk.hash(&compilation.chunk_hashes_artifact) {
+        compilation_hasher.update(hash);
+      }
+      if let Some(content_hashes) = chunk.content_hash(&compilation.chunk_hashes_artifact) {
+        content_hashes
+          .iter()
+          .sorted_unstable_by_key(|(source_type, _)| *source_type)
+          .for_each(|(source_type, content_hash)| {
+            compilation_hasher.update(source_type);
+            compilation_hasher.update(content_hash);
+          });
+      }
     });
-  compilation.hot_index.hash(&mut compilation_hasher);
+  compilation_hasher.update(&compilation.hot_index);
   compilation.hash = Some(compilation_hasher.digest(&compilation.options.output.hash_digest));
 
   // re-create runtime chunk hash that depend on full hash
@@ -422,13 +433,14 @@ pub async fn create_hash(
       let chunk_hash = chunk
         .hash(&compilation.chunk_hashes_artifact)
         .expect("should have chunk hash");
-      let mut hasher = RspackHash::from(&compilation.options.output);
-      chunk_hash.hash(&mut hasher);
-      compilation
-        .hash
-        .as_ref()
-        .expect("compilation hash should be set")
-        .hash(&mut hasher);
+      let mut hasher = RspackHasher::from(&compilation.options.output);
+      hasher.update(chunk_hash);
+      hasher.update(
+        compilation
+          .hash
+          .as_ref()
+          .expect("compilation hash should be set"),
+      );
       hasher.digest(&compilation.options.output.hash_digest)
     };
     let new_content_hash = {
@@ -438,13 +450,14 @@ pub async fn create_hash(
       content_hash
         .iter()
         .map(|(source_type, content_hash)| {
-          let mut hasher = RspackHash::from(&compilation.options.output);
-          content_hash.hash(&mut hasher);
-          compilation
-            .hash
-            .as_ref()
-            .expect("compilation hash should be set")
-            .hash(&mut hasher);
+          let mut hasher = RspackHasher::from(&compilation.options.output);
+          hasher.update(content_hash);
+          hasher.update(
+            compilation
+              .hash
+              .as_ref()
+              .expect("compilation hash should be set"),
+          );
           (
             *source_type,
             hasher.digest(&compilation.options.output.hash_digest),
@@ -468,7 +481,7 @@ pub async fn create_hash(
 #[instrument(skip_all)]
 pub async fn runtime_modules_code_generation(compilation: &mut Compilation) -> Result<()> {
   let compilation_ref = &*compilation;
-  let results = rspack_futures::scope::<_, Result<_>>(|token| {
+  let results = rspack_parallel::scope::<_, Result<_>>(|token| {
     compilation
       .runtime_modules
       .iter()
@@ -517,7 +530,7 @@ async fn process_chunk_hash(
   chunk_ukey: ChunkUkey,
   plugin_driver: &SharedPluginDriver,
 ) -> Result<ChunkHashResult> {
-  let mut hasher = RspackHash::from(&compilation.options.output);
+  let mut hasher = RspackHasher::from(&compilation.options.output);
   if let Some(chunk) = compilation
     .build_chunk_graph_artifact
     .chunk_by_ukey
@@ -532,7 +545,7 @@ async fn process_chunk_hash(
     .await?;
   let chunk_hash = hasher.digest(&compilation.options.output.hash_digest);
 
-  let mut content_hashes: HashMap<SourceType, RspackHash> = HashMap::default();
+  let mut content_hashes: HashMap<SourceType, RspackHasher> = HashMap::default();
   plugin_driver
     .compilation_hooks
     .content_hash
@@ -542,7 +555,7 @@ async fn process_chunk_hash(
   let content_hashes = content_hashes
     .into_iter()
     .map(|(t, mut hasher)| {
-      chunk_hash.hash(&mut hasher);
+      hasher.update(&chunk_hash);
       (t, hasher.digest(&compilation.options.output.hash_digest))
     })
     .collect();

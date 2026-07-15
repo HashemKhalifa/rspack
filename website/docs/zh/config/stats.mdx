@@ -1,3 +1,7 @@
+---
+description: '开启 stats.all 会导致大量的 Rust 与 JavaScript 的数据传输，这将显著提高 Stats 生成耗时，请谨慎使用。'
+---
+
 import PropertyType from '../../../components/PropertyType.tsx';
 import WebpackLicense from '@components/WebpackLicense';
 
@@ -14,14 +18,23 @@ import WebpackLicense from '@components/WebpackLicense';
 
 :::
 
-<PropertyType
-  type="boolean | string | Object"
-  defaultValueList={[
-    {
-      defaultValue: `{"preset":"errors-warnings","timings":true}`,
-    },
-  ]}
-/>
+- **类型：**
+
+```ts
+type StatsPresets =
+  | 'normal'
+  | 'none'
+  | 'verbose'
+  | 'errors-only'
+  | 'errors-warnings'
+  | 'minimal'
+  | 'detailed'
+  | 'summary';
+
+type Stats = boolean | StatsOptions | StatsPresets;
+```
+
+- **默认值：** `{ "preset":"errors-warnings","timings":true }`
 
 ## 预设（Stats presets）
 
@@ -56,7 +69,7 @@ import WebpackLicense from '@components/WebpackLicense';
 ### stats.preset
 
 <PropertyType
-  type="boolean | string"
+  type="boolean | StatsPresets"
   defaultValueList={[{ defaultValue: 'undefined' }]}
 />
 
@@ -91,11 +104,11 @@ import WebpackLicense from '@components/WebpackLicense';
 ### stats.excludeAssets
 
 <PropertyType
-  type="Array<string | RegExp | (name: string) => boolean> | string | RegExp | (name: string) => boolean | false"
+  type="boolean | string | RegExp | ((name: string, asset: any) => boolean) | Array<string | RegExp | ((name: string, asset: any) => boolean)>"
   defaultValueList={[{ defaultValue: 'false' }]}
 />
 
-隐藏匹配的资源，匹配方式支持字符串、正则、接收资源名称并返回布尔的函数，同时也支持以上类型的数组。
+隐藏匹配的资源，匹配方式支持字符串、正则，或接收资源名称和资源对象并返回布尔值的函数，同时也支持以上类型的数组。
 
 ### stats.cachedAssets
 
@@ -154,6 +167,12 @@ import WebpackLicense from '@components/WebpackLicense';
 <PropertyType type="number" defaultValueList={[{ defaultValue: '10' }]} />
 
 展示的 Chunk 内模块数量（超过的部分将以分组方式折叠）。
+
+### stats.chunkModulesSort
+
+<PropertyType type="string" defaultValueList={[{ defaultValue: '"name"' }]} />
+
+基于指定的字段对 Chunk 内模块排序。可用的排序字段见[字段排序](/config/stats#字段排序)。使用 `!` 作为前缀可以反转排序结果。
 
 ### stats.dependentModules
 
@@ -294,20 +313,28 @@ import WebpackLicense from '@components/WebpackLicense';
 
 > 运行时模块为 Rspack 内置模块，用于提供各种运行时能力。
 
+:::tip
+`stats.runtime` 是 `stats.runtimeModules` 的兼容性别名。只有在没有指定 `stats.runtimeModules` 时才会生效；如果两者都设置，以 `stats.runtimeModules` 为准。
+:::
+
 ### stats.cachedModules
 
 <PropertyType type="boolean" defaultValueList={[{ defaultValue: 'true' }]} />
 
 是否展示被缓存的模块。
 
+:::tip
+`stats.cached` 是 `stats.cachedModules` 的兼容性别名。只有在没有指定 `stats.cachedModules` 时才会生效；如果两者都设置，以 `stats.cachedModules` 为准。
+:::
+
 ### stats.excludeModules
 
 <PropertyType
-  type="Array<string | RegExp | (name: string) => boolean> | string | RegExp | (name: string) => boolean | false"
+  type="boolean | string | RegExp | ((name: string, module: any, type: any) => boolean) | Array<string | RegExp | ((name: string, module: any, type: any) => boolean)>"
   defaultValueList={[{ defaultValue: 'false' }]}
 />
 
-隐藏匹配的模块，匹配方式支持字符串、正则、函数。
+隐藏匹配的模块，匹配方式支持字符串、正则，或接收模块名称、模块对象和模块类型并返回布尔值的函数，同时也支持以上类型的数组。
 
 ### stats.nestedModules
 
@@ -320,6 +347,12 @@ import WebpackLicense from '@components/WebpackLicense';
 <PropertyType type="number" defaultValueList={[{ defaultValue: '10' }]} />
 
 展示的被嵌套模块数量（超过的部分将以分组方式折叠）。
+
+### stats.nestedModulesSort
+
+<PropertyType type="string" />
+
+基于指定的字段对嵌套模块排序。可用的排序字段见[字段排序](/config/stats#字段排序)。使用 `!` 作为前缀可以反转排序结果。
 
 ## 模块分组选项
 
@@ -452,7 +485,12 @@ import WebpackLicense from '@components/WebpackLicense';
 
 ### stats.loggingDebug
 
-<PropertyType type="Array<string | RegExp | function (name) => boolean>" />
+- **类型：**
+
+```ts
+type FilterItemTypes = RegExp | string | ((value: string) => boolean);
+type StatsLoggingDebug = boolean | FilterItemTypes | FilterItemTypes[];
+```
 
 是否展示插件和 loader 中指定 [Logger](/api/javascript-api/logger) 的调试信息。当 `stats.logging` 为 `false` 时 `stats.loggingDebug` 会被忽略。
 
@@ -475,11 +513,26 @@ export default {
 
 ### stats.colors
 
-<PropertyType type="boolean" defaultValueList={[{ defaultValue: 'false' }]} />
+- **类型：**
+
+```ts
+type StatsColorOptions = {
+  bold?: string;
+  cyan?: string;
+  green?: string;
+  magenta?: string;
+  red?: string;
+  yellow?: string;
+};
+
+type StatsColors = boolean | StatsColorOptions;
+```
+
+- **默认值：** 根据当前环境决定
 
 是否在展示日志时添加颜色。
 
-在支持颜色输出的环境中执行 `rspack build` 时，它被默认设置为 `true`。
+当传入对象时，可以自定义每种支持颜色使用的 ANSI 转义序列。默认情况下，Rspack 会在当前环境支持颜色输出时启用颜色。
 
 ## Compilation 选项
 
@@ -506,12 +559,6 @@ export default {
 <PropertyType type="boolean" defaultValueList={[{ defaultValue: 'true' }]} />
 
 是否展示 Rspack 的版本号。
-
-### stats.context
-
-<PropertyType type="string" />
-
-是否展示构建的 [基础目录](/config/context) 为绝对路径，可用来缩短模块标识符的长度。
 
 ### stats.publicPath
 

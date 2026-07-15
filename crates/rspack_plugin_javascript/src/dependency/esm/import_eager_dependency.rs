@@ -8,9 +8,8 @@ use rspack_core::{
   FactorizeInfo, ImportAttributes, ImportPhase, ModuleDependency, ModuleGraphCacheArtifact,
   ReferencedSpecifier, ResourceIdentifier, TemplateContext, TemplateReplaceSource,
   create_exports_object_referenced, create_referenced_exports_by_referenced_specifiers,
-  get_exports_type,
 };
-use swc_core::ecma::atoms::Atom;
+use swc_atoms::Atom;
 
 use super::create_resource_identifier_for_esm_dependency;
 
@@ -33,17 +32,16 @@ impl ImportEagerDependency {
   pub fn new(
     request: Atom,
     range: DependencyRange,
-    referenced_specifiers: Option<Vec<ReferencedSpecifier>>,
     attributes: Option<ImportAttributes>,
     phase: ImportPhase,
   ) -> Self {
     let resource_identifier =
-      create_resource_identifier_for_esm_dependency(request.as_str(), attributes.as_ref());
+      create_resource_identifier_for_esm_dependency(request.as_str(), phase, attributes.as_ref());
     Self {
       request,
       range,
       id: DependencyId::new(),
-      referenced_specifiers,
+      referenced_specifiers: None,
       attributes,
       phase,
       resource_identifier,
@@ -51,7 +49,17 @@ impl ImportEagerDependency {
     }
   }
 
-  pub fn set_referenced_specifiers(&mut self, referenced_specifiers: Vec<ReferencedSpecifier>) {
+  pub fn set_referenced_specifiers(
+    &mut self,
+    referenced_specifiers: Vec<ReferencedSpecifier>,
+    from_magic_comment: bool,
+  ) {
+    if !from_magic_comment && referenced_specifiers.is_empty() {
+      // If the referenced specifiers are empty, keep it as default (None), since this dependency can't eliminate by side effects optimization,
+      // so if we set it to Some(vec![]), and the dependency still executes, it will cause runtime error because the exports are all tree shaken.
+      // see test case `tests/rspack-test/configCases/tree-shaking/side-effects-free-dynamic-import`
+      return;
+    }
     self.referenced_specifiers = Some(referenced_specifiers);
   }
 }
@@ -94,17 +102,27 @@ impl Dependency for ImportEagerDependency {
     _runtime: Option<&rspack_core::RuntimeSpec>,
   ) -> Vec<rspack_core::ExtendedReferencedExport> {
     if let Some(referenced_specifiers) = &self.referenced_specifiers {
+      let module = module_graph
+        .get_module_by_dependency_id(&self.id)
+        .expect("should have module");
       let parent_module = module_graph
         .get_parent_module(&self.id)
         .expect("should have parent module");
-      let exports_type = get_exports_type(
+      let strict = module_graph
+        .module_by_identifier(parent_module)
+        .expect("should have parent module")
+        .get_strict_esm_module();
+      let exports_type = module.get_exports_type(
         module_graph,
         module_graph_cache,
         exports_info_artifact,
-        &self.id,
-        parent_module,
+        strict,
       );
-      create_referenced_exports_by_referenced_specifiers(referenced_specifiers, exports_type)
+      create_referenced_exports_by_referenced_specifiers(
+        referenced_specifiers,
+        exports_type,
+        module.build_info().json_data.is_some(),
+      )
     } else {
       create_exports_object_referenced()
     }

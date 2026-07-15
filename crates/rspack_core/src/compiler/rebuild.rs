@@ -1,10 +1,11 @@
 use std::path::Path;
 
-use rspack_collections::{DatabaseItem, IdentifierMap};
+use rspack_collections::IdentifierMap;
 use rspack_error::Result;
 use rspack_hash::RspackHashDigest;
 use rspack_paths::ArcPathSet;
 use rspack_tasks::within_compiler_context;
+use rustc_hash::FxHashSet;
 
 use crate::{
   ChunkGraph, ChunkKind, Compilation, Compiler, RuntimeSpec,
@@ -17,8 +18,8 @@ use crate::{
 impl Compiler {
   pub async fn rebuild(
     &mut self,
-    changed_files: std::collections::HashSet<String>,
-    deleted_files: std::collections::HashSet<String>,
+    changed_files: FxHashSet<String>,
+    deleted_files: FxHashSet<String>,
   ) -> Result<()> {
     match within_compiler_context(
       self.compiler_context.clone(),
@@ -53,10 +54,10 @@ impl Compiler {
   ))]
   async fn rebuild_inner(
     &mut self,
-    changed_files: std::collections::HashSet<String>,
-    deleted_files: std::collections::HashSet<String>,
+    changed_files: FxHashSet<String>,
+    deleted_files: FxHashSet<String>,
   ) -> Result<()> {
-    let records = CompilationRecords::record(&self.compilation);
+    let records = self.last_records.clone();
 
     // build without stats
     {
@@ -69,6 +70,8 @@ impl Compiler {
       all_files.extend(removed_files.clone());
 
       self.plugin_driver.clear_cache(self.compilation.id());
+      let compilation_logging = self.compilation.get_logging().clone();
+      compilation_logging.clear();
 
       let mut next_compilation = Compilation::new(
         self.id,
@@ -78,9 +81,10 @@ impl Compiler {
         self.buildtime_plugin_driver.clone(),
         self.resolver_factory.clone(),
         self.loader_resolver_factory.clone(),
-        Some(records),
+        records,
         Incremental::new_hot(self.options.incremental),
         Some(ModuleExecutor::default()),
+        compilation_logging,
         modified_files,
         removed_files,
         self.input_filesystem.clone(),

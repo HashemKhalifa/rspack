@@ -1,21 +1,41 @@
-use std::{hash::Hash, sync::LazyLock};
+use std::sync::LazyLock;
 
 use itertools::Itertools;
 use regex::Regex;
 use rspack_collections::IdentifierLinkedMap;
 use rspack_core::{
-  Chunk, ChunkGraph, ChunkGroupByUkey, ChunkGroupUkey, ChunkUkey, Compilation, PathData,
-  RuntimeCodeTemplate, RuntimeGlobals, RuntimeVariable, SourceType, get_js_chunk_filename_template,
+  Chunk, ChunkGraph, ChunkGroupByUkey, ChunkGroupUkey, ChunkLoading, ChunkLoadingType, ChunkUkey,
+  Compilation, PathData, RuntimeCodeTemplate, RuntimeGlobals, RuntimeModuleRuntimeRequirements,
+  RuntimeVariable, SourceType,
+  chunk_graph_chunk::ChunkIdSet,
+  get_js_chunk_filename_template,
   rspack_sources::{BoxSource, RawStringSource, SourceExt},
 };
 use rspack_error::{Result, error};
-use rspack_hash::RspackHash;
+use rspack_hash::{RspackHash, RspackHasher};
 use rspack_plugin_javascript::runtime::stringify_chunks_to_array;
 use rspack_util::fx_hash::FxIndexSet;
 use rustc_hash::FxHashSet as HashSet;
 
+use crate::runtime_module::is_enabled_for_chunk;
+
+pub fn should_export_webpack_require_for_module_chunk_loading(
+  chunk_ukey: &ChunkUkey,
+  compilation: &Compilation,
+) -> bool {
+  let chunk_loading = ChunkLoading::Enable(ChunkLoadingType::Import);
+  is_enabled_for_chunk(chunk_ukey, &chunk_loading, compilation)
+    && compilation
+      .build_chunk_graph_artifact
+      .chunk_graph
+      .has_chunk_entry_dependent_chunks(
+        chunk_ukey,
+        &compilation.build_chunk_graph_artifact.chunk_group_by_ukey,
+      )
+}
+
 pub fn update_hash_for_entry_startup(
-  hasher: &mut RspackHash,
+  hasher: &mut RspackHasher,
   compilation: &Compilation,
   entries: &IdentifierLinkedMap<ChunkGroupUkey>,
   chunk: &ChunkUkey,
@@ -205,10 +225,10 @@ pub fn generate_entry_startup(
   chunk: &ChunkUkey,
   entries: &IdentifierLinkedMap<ChunkGroupUkey>,
   passive: bool,
-  runtime_template: &RuntimeCodeTemplate<'_>,
+  runtime_template: &RuntimeCodeTemplate,
 ) -> BoxSource {
   let mut module_id_exprs = vec![];
-  let mut chunks_ids = HashSet::default();
+  let mut chunks_ids = ChunkIdSet::default();
   let module_graph = compilation.get_module_graph();
   for (module, entry) in entries {
     if let Some(module_id) = module_graph
@@ -353,6 +373,7 @@ pub async fn get_chunk_output_name(chunk: &Chunk, compilation: &Compilation) -> 
     .get_path(
       &filename,
       PathData::default()
+        .chunk(chunk.ukey(), compilation)
         .chunk_id_optional(chunk.id().map(|id| id.as_str()))
         .chunk_hash_optional(chunk.rendered_hash(
           &compilation.chunk_hashes_artifact,
@@ -381,19 +402,48 @@ static EJS_RUNTIME_GLOBALS_RE: LazyLock<Regex> = LazyLock::new(|| {
   Regex::new(r"<%\-\s*([A-Z][A-Z0-9_]*)\s*%>").expect("invalid EJS runtime globals regex")
 });
 
+static EJS_RUNTIME_GLOBAL_DEFINE_RE: LazyLock<Regex> = LazyLock::new(|| {
+  Regex::new(r"<%\-\s*define\(\s*([A-Z][A-Z0-9_]*)\s*\)\s*%>")
+    .expect("invalid EJS runtime global define regex")
+});
+
+static EJS_RUNTIME_GLOBAL_WEAK_RE: LazyLock<Regex> = LazyLock::new(|| {
+  Regex::new(r"<%\-\s*weak\(\s*([A-Z][A-Z0-9_]*)\s*\)\s*%>")
+    .expect("invalid EJS runtime global weak regex")
+});
+
 /// Extracts all RuntimeGlobals references from an EJS template string.
 ///
 /// Matches patterns like `<%- PUBLIC_PATH %>` or `<%- GET_CHUNK_SCRIPT_FILENAME %>`
 /// where the identifier is uppercase letters, digits and underscores (RuntimeGlobals enum variant naming).
 /// Does not match other EJS placeholders such as `<%- basicFunction(...) %>` or `<%- _modules %>`.
-pub fn extract_runtime_globals_from_ejs(ejs_content: &str) -> RuntimeGlobals {
+fn extract_runtime_global_references_from_ejs(ejs_content: &str) -> RuntimeGlobals {
   let names = EJS_RUNTIME_GLOBALS_RE
     .captures_iter(ejs_content)
     .map(|cap| cap[1].to_string())
-    // script nonce is always optional
-    .filter(|name| name.as_str() != "SCRIPT_NONCE")
     .collect_vec();
   RuntimeGlobals::from_names(&names)
+}
+
+pub fn extract_runtime_globals_from_ejs(ejs_content: &str) -> RuntimeModuleRuntimeRequirements {
+  let mut dependencies = extract_runtime_global_references_from_ejs(ejs_content);
+  let define_names = EJS_RUNTIME_GLOBAL_DEFINE_RE
+    .captures_iter(ejs_content)
+    .map(|cap| cap[1].to_string())
+    .collect_vec();
+  let define = RuntimeGlobals::from_names(&define_names);
+  let weak_names = EJS_RUNTIME_GLOBAL_WEAK_RE
+    .captures_iter(ejs_content)
+    .map(|cap| cap[1].to_string())
+    .collect_vec();
+  let weak = RuntimeGlobals::from_names(&weak_names);
+  dependencies.remove(weak);
+  RuntimeModuleRuntimeRequirements {
+    dependencies,
+    weak,
+    define,
+    ..Default::default()
+  }
 }
 
 #[cfg(test)]
@@ -407,18 +457,22 @@ mod tests {
 
   #[test]
   fn test_extract_runtime_globals_empty() {
-    assert!(extract_runtime_globals_from_ejs("").is_empty());
-    assert!(extract_runtime_globals_from_ejs("plain text").is_empty());
+    assert!(extract_runtime_globals_from_ejs("").dependencies.is_empty());
+    assert!(
+      extract_runtime_globals_from_ejs("plain text")
+        .dependencies
+        .is_empty()
+    );
   }
 
   #[test]
   fn test_extract_runtime_globals_single() {
     assert_eq!(
-      extract_runtime_globals_from_ejs("<%- PUBLIC_PATH %>"),
+      extract_runtime_globals_from_ejs("<%- PUBLIC_PATH %>").dependencies,
       expected_globals(&["PUBLIC_PATH"])
     );
     assert_eq!(
-      extract_runtime_globals_from_ejs("var x = <%- REQUIRE %>;"),
+      extract_runtime_globals_from_ejs("var x = <%- REQUIRE %>;").dependencies,
       expected_globals(&["REQUIRE"])
     );
   }
@@ -428,7 +482,7 @@ mod tests {
     let ejs = r#"link.href = <%- PUBLIC_PATH %> + <%- GET_CHUNK_SCRIPT_FILENAME %>(chunkId);
     if (<%- HAS_OWN_PROPERTY %>(installedChunks, chunkId)) {}"#;
     assert_eq!(
-      extract_runtime_globals_from_ejs(ejs),
+      extract_runtime_globals_from_ejs(ejs).dependencies,
       expected_globals(&[
         "PUBLIC_PATH",
         "GET_CHUNK_SCRIPT_FILENAME",
@@ -441,7 +495,7 @@ mod tests {
   fn test_extract_runtime_globals_deduplicate() {
     let ejs = "<%- REQUIRE %>; <%- PUBLIC_PATH %>; <%- REQUIRE %>; <%- PUBLIC_PATH %>";
     assert_eq!(
-      extract_runtime_globals_from_ejs(ejs),
+      extract_runtime_globals_from_ejs(ejs).dependencies,
       expected_globals(&["REQUIRE", "PUBLIC_PATH"])
     );
   }
@@ -449,7 +503,7 @@ mod tests {
   #[test]
   fn test_extract_runtime_globals_with_spaces() {
     assert_eq!(
-      extract_runtime_globals_from_ejs("<%-  ENSURE_CHUNK  %>"),
+      extract_runtime_globals_from_ejs("<%-  ENSURE_CHUNK  %>").dependencies,
       expected_globals(&["ENSURE_CHUNK"])
     );
   }
@@ -462,7 +516,7 @@ mod tests {
     <%- _cross_origin %>
     <%- MODULE_CACHE %>"#;
     assert_eq!(
-      extract_runtime_globals_from_ejs(ejs),
+      extract_runtime_globals_from_ejs(ejs).dependencies,
       expected_globals(&["MODULE_CACHE"])
     );
   }
@@ -471,7 +525,7 @@ mod tests {
   fn test_extract_runtime_globals_uppercase_with_underscores() {
     let ejs = "<%- GET_CHUNK_UPDATE_SCRIPT_FILENAME %> <%- HMR_DOWNLOAD_UPDATE_HANDLERS %>";
     assert_eq!(
-      extract_runtime_globals_from_ejs(ejs),
+      extract_runtime_globals_from_ejs(ejs).dependencies,
       expected_globals(&[
         "GET_CHUNK_UPDATE_SCRIPT_FILENAME",
         "HMR_DOWNLOAD_UPDATE_HANDLERS"
@@ -491,8 +545,26 @@ mod tests {
     if (__rspack_esm_runtime) __rspack_esm_runtime(<%- REQUIRE %>);
 };"#;
     assert_eq!(
-      extract_runtime_globals_from_ejs(ejs),
+      extract_runtime_globals_from_ejs(ejs).dependencies,
       expected_globals(&["HAS_OWN_PROPERTY", "MODULE_FACTORIES", "REQUIRE"])
+    );
+  }
+
+  #[test]
+  fn test_extract_runtime_globals_excludes_define_and_weak_from_dependencies() {
+    let ejs = "<%- PUBLIC_PATH %>; <%- define(ENSURE_CHUNK_HANDLERS) %>; <%- weak(SCRIPT_NONCE) %>; <%- weak(ON_CHUNKS_LOADED) %>;";
+    let requirements = extract_runtime_globals_from_ejs(ejs);
+    assert_eq!(
+      requirements.dependencies,
+      expected_globals(&["PUBLIC_PATH"])
+    );
+    assert_eq!(
+      requirements.define,
+      expected_globals(&["ENSURE_CHUNK_HANDLERS"])
+    );
+    assert_eq!(
+      requirements.weak,
+      expected_globals(&["SCRIPT_NONCE", "ON_CHUNKS_LOADED"])
     );
   }
 }

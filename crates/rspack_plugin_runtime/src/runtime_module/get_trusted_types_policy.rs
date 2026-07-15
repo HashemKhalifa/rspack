@@ -1,6 +1,6 @@
 use rspack_core::{
-  OnPolicyCreationFailure, RuntimeGlobals, RuntimeModule, RuntimeModuleGenerateContext,
-  RuntimeTemplate, impl_runtime_module,
+  Compilation, OnPolicyCreationFailure, RuntimeGlobals, RuntimeModule,
+  RuntimeModuleGenerateContext, RuntimeTemplate, impl_runtime_module,
 };
 
 use crate::get_chunk_runtime_requirements;
@@ -17,9 +17,19 @@ impl GetTrustedTypesPolicyRuntimeModule {
 
 #[async_trait::async_trait]
 impl RuntimeModule for GetTrustedTypesPolicyRuntimeModule {
+  fn runtime_requirements(
+    &self,
+    _compilation: &Compilation,
+  ) -> rspack_core::RuntimeModuleRuntimeRequirements {
+    rspack_core::RuntimeModuleRuntimeRequirements {
+      define: { RuntimeGlobals::GET_TRUSTED_TYPES_POLICY },
+      ..Default::default()
+    }
+  }
+
   fn template(&self) -> Vec<(String, String)> {
     vec![(
-      self.id.to_string(),
+      self.id().to_string(),
       include_str!("runtime/get_trusted_types_policy.ejs").to_string(),
     )]
   }
@@ -36,14 +46,14 @@ impl RuntimeModule for GetTrustedTypesPolicyRuntimeModule {
       .as_ref()
       .expect("should have trusted_types");
     let runtime_requirements =
-      get_chunk_runtime_requirements(compilation, &self.chunk.expect("should have chunk"));
+      get_chunk_runtime_requirements(compilation, &self.chunk().expect("should have chunk"));
     let wrap_policy_creation_in_try_catch = matches!(
       trusted_types.on_policy_creation_failure,
       OnPolicyCreationFailure::Continue
     );
 
     let source = context.runtime_template.render(
-      &self.id,
+      self.id(),
       Some(serde_json::json!({
         "_create_script": runtime_requirements.contains(RuntimeGlobals::CREATE_SCRIPT),
         "_create_script_url": runtime_requirements.contains(RuntimeGlobals::CREATE_SCRIPT_URL),

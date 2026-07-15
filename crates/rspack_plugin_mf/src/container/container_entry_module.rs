@@ -6,22 +6,26 @@ use rspack_collections::{Identifiable, Identifier};
 use rspack_core::{
   AsyncDependenciesBlock, AsyncDependenciesBlockIdentifier, BoxDependency, BoxModule, BuildContext,
   BuildInfo, BuildMeta, BuildMetaExportsType, BuildResult, ChunkGroupOptions, CodeGenerationResult,
-  Compilation, Context, DependenciesBlock, Dependency, DependencyId, DependencyType,
-  ExportsArgument, FactoryMeta, GroupOptions, LibIdentOptions, Module, ModuleCodeGenerationContext,
-  ModuleCodeTemplate, ModuleDependency, ModuleGraph, ModuleIdentifier, ModuleType, RuntimeGlobals,
-  RuntimeSpec, SourceType, StaticExportsDependency, StaticExportsSpec, impl_module_meta_info,
-  impl_source_map_config, module_update_hash,
+  CodeGenerationRuntimeRequirementsWrite, Compilation, Context, DependenciesBlock, Dependency,
+  DependencyId, DependencyType, ExportsArgument, FactoryMeta, GroupOptions, LibIdentOptions,
+  Module, ModuleCodeGenerationContext, ModuleCodeTemplate, ModuleDependency, ModuleGraph,
+  ModuleIdentifier, ModuleType, RuntimeGlobals, RuntimeSpec, SourceType, StaticExportsDependency,
+  StaticExportsSpec, impl_module_meta_info, impl_source_map_config, module_update_hash,
   rspack_sources::{BoxSource, RawStringSource, SourceExt},
+  runtime_mode::RuntimeMode,
 };
 use rspack_error::{Result, impl_empty_diagnosable_trait};
-use rspack_hash::{RspackHash, RspackHashDigest};
+use rspack_hash::{RspackHashDigest, RspackHasher};
 use rspack_util::{json_stringify_str, source_map::SourceMapKind};
 use rustc_hash::FxHashSet;
 
 use super::{
   container_exposed_dependency::ContainerExposedDependency, container_plugin::ExposeOptions,
 };
-use crate::{ShareScope, utils::json_stringify};
+use crate::{
+  ShareScope,
+  utils::{json_stringify, module_identifier_namespace, module_require_scope_name},
+};
 
 #[impl_source_map_config]
 #[cacheable]
@@ -49,8 +53,10 @@ impl ContainerEntryModule {
     exposes: Vec<(String, ExposeOptions)>,
     share_scope: ShareScope,
     enhanced: bool,
+    runtime_mode: RuntimeMode,
   ) -> Self {
-    let lib_ident = format!("webpack/container/entry/{}", &name);
+    let namespace = module_identifier_namespace(runtime_mode);
+    let lib_ident = format!("{namespace}/container/entry/{name}");
     Self {
       blocks: Vec::new(),
       dependencies: Vec::new(),
@@ -68,10 +74,7 @@ impl ContainerEntryModule {
         top_level_declarations: Some(FxHashSet::default()),
         ..Default::default()
       },
-      build_meta: BuildMeta {
-        exports_type: BuildMetaExportsType::Namespace,
-        ..Default::default()
-      },
+      build_meta: BuildMeta::default().with_exports_type(BuildMetaExportsType::Namespace),
       enhanced,
       request: None,
       version: None,
@@ -81,8 +84,14 @@ impl ContainerEntryModule {
     }
   }
 
-  pub fn new_share_container_entry(name: String, request: String, version: String) -> Self {
-    let lib_ident = format!("webpack/share/container/{}", &name);
+  pub fn new_share_container_entry(
+    name: String,
+    request: String,
+    version: String,
+    runtime_mode: RuntimeMode,
+  ) -> Self {
+    let namespace = module_identifier_namespace(runtime_mode);
+    let lib_ident = format!("{namespace}/share/container/{name}");
     Self {
       blocks: Vec::new(),
       dependencies: Vec::new(),
@@ -96,10 +105,7 @@ impl ContainerEntryModule {
         top_level_declarations: Some(FxHashSet::default()),
         ..Default::default()
       },
-      build_meta: BuildMeta {
-        exports_type: BuildMetaExportsType::Namespace,
-        ..Default::default()
-      },
+      build_meta: BuildMeta::default().with_exports_type(BuildMetaExportsType::Namespace),
       enhanced: false,
       request: Some(request),
       version: Some(version),
@@ -255,7 +261,8 @@ impl Module for ContainerEntryModule {
     } = code_generation_context;
 
     let mut code_generation_result = CodeGenerationResult::default();
-    let require_name = runtime_template.render_runtime_globals(&RuntimeGlobals::REQUIRE);
+    let require_name = module_require_scope_name(compilation, runtime_template);
+    let runtime_argument = require_name.clone();
 
     if self.dependency_type == DependencyType::ShareContainerEntry {
       let module_graph = compilation.get_module_graph();
@@ -273,18 +280,15 @@ impl Module for ContainerEntryModule {
         }
       }
 
-      let federation_global = format!(
-        "{}.federation",
-        runtime_template.render_runtime_globals(&RuntimeGlobals::REQUIRE)
-      );
+      let federation_global = format!("{require_name}.federation");
 
       // Generate installInitialConsumes function using returning_function
       let install_initial_consumes_call = format!(
-        r#"localBundlerRuntime.installInitialConsumes({{ 
+        r#"localBundlerRuntime.installInitialConsumes({{
             installedModules: localInstalledModules, 
             initialConsumes: {require_name}.consumesLoadingData.initialConsumes, 
             moduleToHandlerMapping: {require_name}.federation.consumesLoadingModuleToHandlerMapping || {{}}, 
-            webpackRequire: {require_name}, 
+            webpackRequire: {runtime_argument}, 
             asyncLoad: true 
           }})"#,
       );
@@ -342,18 +346,14 @@ impl Module for ContainerEntryModule {
       .insert(RuntimeGlobals::CURRENT_REMOTE_GET_SCOPE);
 
     let module_map = ExposeModuleMap::new(compilation, self, runtime_template);
+    let mut module_map_runtime_requirements = *runtime_template.runtime_requirements();
+    module_map_runtime_requirements.remove(RuntimeGlobals::CURRENT_REMOTE_GET_SCOPE);
     let module_map_str = module_map.render(runtime_template);
     let source = if self.enhanced {
       let define_property_getters =
         runtime_template.render_runtime_globals(&RuntimeGlobals::DEFINE_PROPERTY_GETTERS);
-      let get_container = format!(
-        "{}.getContainer",
-        runtime_template.render_runtime_globals(&RuntimeGlobals::REQUIRE)
-      );
-      let init_container = format!(
-        "{}.initContainer",
-        runtime_template.render_runtime_globals(&RuntimeGlobals::REQUIRE)
-      );
+      let get_container = format!("{require_name}.getContainer");
+      let init_container = format!("{require_name}.initContainer");
 
       format!(
         r#"
@@ -419,11 +419,19 @@ var init = function(shareScope, initScope) {{
     code_generation_result =
       code_generation_result.with_javascript(RawStringSource::from(source).boxed());
     code_generation_result.add(SourceType::Expose, RawStringSource::from_static("").boxed());
+    if !self.enhanced {
+      code_generation_result
+        .data
+        .insert(CodeGenerationRuntimeRequirementsWrite {
+          runtime_requirements: RuntimeGlobals::CURRENT_REMOTE_GET_SCOPE,
+        });
+    }
     if self.enhanced {
       code_generation_result
         .data
         .insert(CodeGenerationDataExpose {
           module_map,
+          module_map_runtime_requirements,
           share_scope: self.share_scope.clone(),
         });
     }
@@ -435,7 +443,7 @@ var init = function(shareScope, initScope) {{
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
   ) -> Result<RspackHashDigest> {
-    let mut hasher = RspackHash::from(&compilation.options.output);
+    let mut hasher = RspackHasher::from(&compilation.options.output);
     module_update_hash(self, &mut hasher, compilation, runtime);
     Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
@@ -520,5 +528,6 @@ impl ExposeModuleMap {
 #[derive(Debug, Clone)]
 pub struct CodeGenerationDataExpose {
   pub module_map: ExposeModuleMap,
+  pub module_map_runtime_requirements: RuntimeGlobals,
   pub share_scope: ShareScope,
 }

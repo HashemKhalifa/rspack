@@ -26,6 +26,7 @@ rspack_resolver         = { workspace = true }
 rspack_sources          = { workspace = true }
 rustc-hash              = { workspace = true }
 serde_json              = { workspace = true }
+simd-json               = { workspace = true }
 smol_str                = { workspace = true }
 sugar_path              = { workspace = true }
 swc_core                = { workspace = true, features = ["ecma_ast"] }
@@ -34,3 +35,7 @@ xxhash-rust             = { workspace = true, features = ["const_xxh64"] }
 
 [lints]
 workspace = true
+
+[lib]
+doctest = false
+test    = false

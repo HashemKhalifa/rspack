@@ -1,7 +1,6 @@
 use std::{
   borrow::Cow,
   env,
-  hash::Hasher,
   path::{Path, PathBuf},
 };
 
@@ -14,7 +13,7 @@ use rspack_core::{
   rspack_sources::{RawBufferSource, RawStringSource, SourceExt},
 };
 use rspack_error::{AnyhowResultToRspackResultExt, Result};
-use rspack_hash::RspackHash;
+use rspack_hash::{RspackHash, RspackHasher};
 use rspack_paths::Utf8PathBuf;
 use rspack_util::fx_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -85,7 +84,10 @@ impl HtmlPluginAssets {
       .map(|entry_name| compilation.entrypoint_by_name(entry_name))
       .flat_map(|entry| entry.get_files(&compilation.build_chunk_graph_artifact.chunk_by_ukey))
       .filter_map(|asset_name| {
-        let asset = compilation.assets().get(&asset_name).expect("TODO:");
+        let asset = compilation
+          .assets()
+          .get(&asset_name)
+          .expect("should have asset for entrypoint file");
         if asset.info.hot_module_replacement.unwrap_or(false)
           || asset.info.development.unwrap_or(false)
         {
@@ -335,8 +337,8 @@ pub async fn create_html_asset(
   template_file_name: &str,
   compilation: &Compilation,
 ) -> Result<(String, CompilationAsset)> {
-  let mut hasher = RspackHash::from(&compilation.options.output);
-  hasher.write(html.as_bytes());
+  let mut hasher = RspackHasher::from(&compilation.options.output);
+  html.hash(&mut hasher);
   let hash_digest = hasher.digest(&compilation.options.output.hash_digest);
   let content_hash = hash_digest.encoded();
 

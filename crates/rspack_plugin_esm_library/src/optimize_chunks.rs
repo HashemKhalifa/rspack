@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{collections::VecDeque, sync::Arc};
 
 use atomic_refcell::AtomicRefCell;
 use rayon::prelude::*;
@@ -14,6 +14,252 @@ use rspack_util::{
 };
 
 use crate::EsmLibraryPlugin;
+
+/// Scan TLA-awaited async chunks for static dependencies that reside in ancestor
+/// chunks. When a module with top-level await dynamically imports a chunk, and
+/// that chunk has static imports back to ancestor chunks, the ancestor must
+/// already have fully executed before the child can resolve its imports — but
+/// the ancestor is paused at its top-level await, creating a deadlock.
+///
+/// This function extracts such shared modules into separate chunks to break
+/// the cycle. It returns `true` if modules were actually extracted.
+pub(crate) fn extract_tla_shared_modules(compilation: &mut Compilation) -> bool {
+  let module_graph = compilation.get_module_graph();
+  let chunk_graph = &compilation.build_chunk_graph_artifact.chunk_graph;
+  let chunk_group_by_ukey = &compilation.build_chunk_graph_artifact.chunk_group_by_ukey;
+
+  // Phase 1: Detect at-risk async chunks.
+  // Source: modules with `has_top_level_await`.
+  // We iterate `module.get_blocks()` (blocks attached directly to the module).
+  // This is conservative: a function-scoped `import()` also shows up here when
+  // the parser attaches its block to the module. We accept that over-inclusion
+  // — extraction only actually happens in later phases when there's a real
+  // cross-chunk static dependency back to an ancestor chunk, so function-only
+  // imports without cycles incur only a cheap BFS and no chunk mutation.
+  // Precise filtering would need AST-level "is the import() directly awaited
+  // at module top level" info which is not exposed on the block.
+  let mut async_chunks_set: FxHashSet<ChunkUkey> = FxHashSet::default();
+  for (module_id, module) in module_graph.modules() {
+    if !module.build_meta().has_top_level_await() {
+      continue;
+    }
+    for block_id in module.get_blocks() {
+      let Some(block) = module_graph.block_by_id(block_id) else {
+        continue;
+      };
+      for dep_id in block.get_dependencies() {
+        let dep = module_graph.dependency_by_id(dep_id);
+        if dep.dependency_type() != &DependencyType::DynamicImport {
+          continue;
+        }
+        let Some(target) = module_graph.module_identifier_by_dependency_id(dep_id) else {
+          continue;
+        };
+        if target == module_id {
+          continue;
+        }
+        for &chunk_ukey in chunk_graph.get_module_chunks(*target) {
+          let chunk = compilation
+            .build_chunk_graph_artifact
+            .chunk_by_ukey
+            .expect_get(&chunk_ukey);
+          if !chunk.is_only_initial(chunk_group_by_ukey) {
+            async_chunks_set.insert(chunk_ukey);
+          }
+        }
+      }
+    }
+  }
+
+  if async_chunks_set.is_empty() {
+    return false;
+  }
+
+  // Phase 2 + 3: For each at-risk async chunk, compute its ancestor chunks and
+  // run a BFS through static outgoing edges. Each async chunk uses its OWN
+  // `visited` set so that a module reachable from multiple async chunks is
+  // analyzed once per origin — this matters when a shared module lives in
+  // DIFFERENT ancestor chunks for different async chunks (e.g. multi-entry
+  // builds where an async chunk hangs off each entry).
+  let async_chunks: Vec<ChunkUkey> = async_chunks_set.iter().copied().collect();
+  let mut modules_to_extract: IdentifierMap<FxHashSet<ChunkUkey>> = IdentifierMap::default();
+
+  for &async_chunk_ukey in &async_chunks {
+    // Collect ancestor chunks via chunk group parent traversal
+    let chunk = compilation
+      .build_chunk_graph_artifact
+      .chunk_by_ukey
+      .expect_get(&async_chunk_ukey);
+    let mut ancestor_groups = FxHashSet::default();
+    for group_ukey in chunk.groups() {
+      let group = chunk_group_by_ukey.expect_get(group_ukey);
+      ancestor_groups.extend(group.ancestors(chunk_group_by_ukey));
+    }
+    let mut ancestor_chunks: FxHashSet<ChunkUkey> = FxHashSet::default();
+    for g in &ancestor_groups {
+      ancestor_chunks.extend(chunk_group_by_ukey.expect_get(g).chunks.iter().copied());
+    }
+
+    if ancestor_chunks.is_empty() {
+      continue;
+    }
+
+    // Per-async-chunk BFS with a local `visited` set. Starts from all modules
+    // that live in this async chunk.
+    let mut visited = IdentifierSet::default();
+    let mut queue: VecDeque<ModuleIdentifier> = chunk_graph
+      .get_chunk_modules_identifier(&async_chunk_ukey)
+      .iter()
+      .copied()
+      .collect();
+
+    while let Some(module_id) = queue.pop_front() {
+      if !visited.insert(module_id) {
+        continue;
+      }
+
+      for conn in module_graph.get_outgoing_connections(&module_id) {
+        // Dynamic imports produce promises; the target is not required to have
+        // finished evaluating in the current frame, so no sync-load deadlock.
+        let dep = module_graph.dependency_by_id(&conn.dependency_id);
+        if dep.dependency_type() == &DependencyType::DynamicImport {
+          continue;
+        }
+        if !conn.is_target_active(
+          module_graph,
+          None,
+          &compilation.module_graph_cache_artifact,
+          &compilation
+            .build_module_graph_artifact
+            .side_effects_state_artifact,
+          &compilation.exports_info_artifact,
+        ) {
+          continue;
+        }
+        let Some(target) = module_graph.module_identifier_by_dependency_id(&conn.dependency_id)
+        else {
+          continue;
+        };
+        let target_chunks = chunk_graph.get_module_chunks(*target);
+
+        // If the target lives in a chunk that is an ancestor of THIS async
+        // chunk, extract it from that specific ancestor chunk. Also continue
+        // BFS into the target — its own static deps may also live in ancestor
+        // chunks (e.g. async → sharedA(ancestor) → sharedB(ancestor)).
+        let mut in_ancestor = false;
+        for &target_chunk in target_chunks {
+          if ancestor_chunks.contains(&target_chunk) {
+            modules_to_extract
+              .entry(*target)
+              .or_default()
+              .insert(target_chunk);
+            in_ancestor = true;
+          }
+        }
+
+        // Continue BFS if target is inside this async chunk OR in an ancestor
+        // chunk (to transitively find all ancestor-resident dependencies).
+        if in_ancestor || target_chunks.contains(&async_chunk_ukey) {
+          queue.push_back(*target);
+        }
+      }
+    }
+  }
+
+  if modules_to_extract.is_empty() {
+    return false;
+  }
+
+  // Phase 4: Group modules by their exact source-chunk set (modules that live
+  // in the same set of chunks go into one new chunk — mirrors
+  // `RemoveDuplicateModulesPlugin`). Then create new chunks and relocate.
+  let mut chunk_group_map: FxHashMap<Vec<ChunkUkey>, Vec<ModuleIdentifier>> = FxHashMap::default();
+  for (module_id, source_chunks) in &modules_to_extract {
+    let mut sorted: Vec<ChunkUkey> = source_chunks.iter().copied().collect();
+    sorted.sort();
+    chunk_group_map.entry(sorted).or_default().push(*module_id);
+  }
+
+  for (source_chunks, modules) in chunk_group_map {
+    let new_chunk_ukey =
+      Compilation::add_chunk(&mut compilation.build_chunk_graph_artifact.chunk_by_ukey);
+    if let Some(mut mutations) = compilation.incremental.mutations_write() {
+      mutations.add(Mutation::ChunkAdd {
+        chunk: new_chunk_ukey,
+      });
+    }
+    {
+      let new_chunk = compilation
+        .build_chunk_graph_artifact
+        .chunk_by_ukey
+        .expect_get_mut(&new_chunk_ukey);
+      *new_chunk.chunk_reason_mut() = Some("extracted to break TLA circular dependency".into());
+    }
+    compilation
+      .build_chunk_graph_artifact
+      .chunk_graph
+      .add_chunk(new_chunk_ukey);
+
+    // For each module: collect which source chunks had it registered as an
+    // entry module, then disconnect from all source chunks and connect to the
+    // new chunk. Only modules that WERE entry modules get reconnected as entry.
+    for &module_id in &modules {
+      let mut entry_reconnections: Vec<ChunkGroupUkey> = Vec::new();
+      for source_chunk_ukey in &source_chunks {
+        if let Some(&entrypoint) = compilation
+          .build_chunk_graph_artifact
+          .chunk_graph
+          .get_chunk_entry_modules_with_chunk_group_iterable(source_chunk_ukey)
+          .get(&module_id)
+        {
+          entry_reconnections.push(entrypoint);
+          compilation
+            .build_chunk_graph_artifact
+            .chunk_graph
+            .disconnect_chunk_and_entry_module(source_chunk_ukey, module_id);
+        }
+        compilation
+          .build_chunk_graph_artifact
+          .chunk_graph
+          .disconnect_chunk_and_module(source_chunk_ukey, module_id);
+      }
+      compilation
+        .build_chunk_graph_artifact
+        .chunk_graph
+        .connect_chunk_and_module(new_chunk_ukey, module_id);
+      for entrypoint in entry_reconnections {
+        compilation
+          .build_chunk_graph_artifact
+          .chunk_graph
+          .connect_chunk_and_entry_module(new_chunk_ukey, module_id, entrypoint);
+      }
+    }
+
+    // Establish chunk group relationships: new_chunk joins each source chunk's
+    // groups (making it a sibling — it will be loaded alongside the source).
+    for source_chunk_ukey in &source_chunks {
+      let [Some(source_chunk), Some(new_chunk)] = compilation
+        .build_chunk_graph_artifact
+        .chunk_by_ukey
+        .get_many_mut([source_chunk_ukey, &new_chunk_ukey])
+      else {
+        unreachable!("both chunks should exist")
+      };
+      source_chunk.split(
+        new_chunk,
+        &mut compilation.build_chunk_graph_artifact.chunk_group_by_ukey,
+      );
+      if let Some(mut mutations) = compilation.incremental.mutations_write() {
+        mutations.add(Mutation::ChunkSplit {
+          from: *source_chunk_ukey,
+          to: new_chunk_ukey,
+        });
+      }
+    }
+  }
+
+  true
+}
 
 /// Ensure that all entry chunks only export the exports used by other chunks,
 /// this requires no other chunks depend on the entry chunk to get exports
@@ -73,6 +319,9 @@ pub(crate) fn ensure_entry_exports(compilation: &mut Compilation) {
           None,
           module_graph,
           &compilation.module_graph_cache_artifact,
+          &compilation
+            .build_module_graph_artifact
+            .side_effects_state_artifact,
           &compilation.exports_info_artifact,
         );
         for outgoing in outgoings.keys() {
@@ -165,7 +414,8 @@ pub(crate) fn ensure_entry_exports(compilation: &mut Compilation) {
 }
 
 /// For each entrypoint, if the runtime chunk is the same as the entry chunk
-/// and any initial ChunkGroup containing this chunk has multiple chunks,
+/// and either this chunk has async chunks or any initial ChunkGroup containing
+/// this chunk has multiple chunks,
 /// split the runtime into a separate runtime chunk.
 ///
 /// This must run AFTER SplitChunksPlugin and RemoveDuplicateModulesPlugin
@@ -191,12 +441,16 @@ pub(crate) fn optimize_runtime_chunks(compilation: &mut Compilation) {
         return false;
       }
 
-      // Check if any initial ChunkGroup containing this chunk has multiple chunks
       let chunk = compilation
         .build_chunk_graph_artifact
         .chunk_by_ukey
         .expect_get(&runtime_chunk_ukey);
 
+      if chunk.has_async_chunks(&compilation.build_chunk_graph_artifact.chunk_group_by_ukey) {
+        return true;
+      }
+
+      // Check if any initial ChunkGroup containing this chunk has multiple chunks
       chunk.groups().iter().any(|group_ukey| {
         let group = compilation
           .build_chunk_graph_artifact
@@ -225,6 +479,10 @@ pub(crate) fn optimize_runtime_chunks(compilation: &mut Compilation) {
     if let Some(mut mutation) = compilation.incremental.mutations_write() {
       mutation.add(Mutation::ChunkAdd {
         chunk: new_chunk_ukey,
+      });
+      mutation.add(Mutation::ChunkSplit {
+        from: entry_chunk_ukey,
+        to: new_chunk_ukey,
       });
     }
 
@@ -298,20 +556,30 @@ pub(crate) fn analyze_dyn_import_targets(
         module_graph,
         None,
         &compilation.module_graph_cache_artifact,
+        &compilation
+          .build_module_graph_artifact
+          .side_effects_state_artifact,
         exports_info_artifact,
       ) {
         continue;
       }
       let target = conn.module_identifier();
+      // Skip orphan modules — they are not in any chunk (e.g. tree-shaken or worker entries)
+      if compilation
+        .build_chunk_graph_artifact
+        .chunk_graph
+        .get_module_chunks(*target)
+        .is_empty()
+      {
+        continue;
+      }
       all_dyn_targets.insert(*target);
 
       if !concatenated_modules.contains(target) {
         continue;
       }
 
-      let exports_info = exports_info_artifact
-        .get_exports_info(target)
-        .as_data(exports_info_artifact);
+      let exports_info = exports_info_artifact.get_exports_info_data(target);
 
       if exports_info.other_exports_info().is_used(None) {
         namespace_targets.insert(*target);
@@ -343,7 +611,13 @@ pub(crate) fn analyze_dyn_import_targets(
       continue;
     }
 
-    let chunk_ukey = EsmLibraryPlugin::get_module_chunk(*module_id, compilation);
+    let chunk_ukey = match EsmLibraryPlugin::get_module_chunk(*module_id, compilation) {
+      Ok(c) => c,
+      Err(e) => {
+        tracing::warn!(error = %e, "failed to resolve module chunk during optimize_chunks");
+        continue;
+      }
+    };
     let chunk_modules = compilation
       .build_chunk_graph_artifact
       .chunk_graph
@@ -391,13 +665,17 @@ pub(crate) fn analyze_dyn_import_targets(
       if module.as_external_module().is_some() {
         continue;
       }
-      let chunk_ukey = EsmLibraryPlugin::get_module_chunk(*module_id, compilation);
+      let chunk_ukey = match EsmLibraryPlugin::get_module_chunk(*module_id, compilation) {
+        Ok(c) => c,
+        Err(e) => {
+          tracing::warn!(error = %e, "failed to resolve module chunk during optimize_chunks");
+          continue;
+        }
+      };
       if strict_chunks.contains(&chunk_ukey) {
         continue;
       }
-      let exports_info = exports_info_artifact
-        .get_exports_info(module_id)
-        .as_data(exports_info_artifact);
+      let exports_info = exports_info_artifact.get_exports_info_data(module_id);
       let export_names: FxHashSet<Atom> = exports_info
         .exports()
         .iter()
@@ -450,7 +728,13 @@ pub(crate) fn analyze_dyn_import_targets(
       if module.as_external_module().is_some() {
         continue;
       }
-      let chunk_ukey = EsmLibraryPlugin::get_module_chunk(*module_id, compilation);
+      let chunk_ukey = match EsmLibraryPlugin::get_module_chunk(*module_id, compilation) {
+        Ok(c) => c,
+        Err(e) => {
+          tracing::warn!(error = %e, "failed to resolve module chunk during optimize_chunks");
+          continue;
+        }
+      };
       if strict_chunks.contains(&chunk_ukey) {
         continue;
       }
@@ -479,24 +763,68 @@ pub(crate) fn analyze_dyn_import_targets(
 
 /// Compute a short name from a module identifier.
 ///
-/// Rules:
-/// - If the filename stem is "index", use the parent directory name
-/// - Otherwise, use the filename stem (without extension)
+/// Identifiers may carry a module-type prefix (`css|…`), trailing metadata
+/// separated by `|`, or a `?query` suffix.  These are stripped first so that
+/// only the clean file path is used for name derivation.
+///
+/// Rules (applied to the cleaned path):
+/// - If the filename stem is "index" and the path is inside `node_modules`,
+///   use the package name (the segment right after `node_modules/`,
+///   or `@scope/pkg` for scoped packages).
+/// - If the filename stem is "index" otherwise, use the parent directory name.
+/// - Otherwise, use the filename stem (without extension).
 ///
 /// Examples:
-/// - `node_modules/lib/index.js` → `lib`
-/// - `/path/to/src/index.js` → `src`
+/// - `node_modules/lib/dist/index.js` → `lib`
+/// - `node_modules/@scope/pkg/dist/index.js` → `@scope/pkg`
 /// - `/path/to/src/app.js` → `app`
+/// - `css|./node_modules/lib/dist/index.css|0||||}` → `lib`
+/// - `/path/to/src/index.js?query=1` → `src`
 fn short_name_from_identifier(identifier: &str) -> Option<String> {
-  let path = Path::new(identifier);
-  let stem = path.file_stem()?.to_str()?;
-  if stem == "index" {
-    let parent = path.parent()?;
-    let dir_name = parent.file_name()?.to_str()?;
-    Some(dir_name.to_string())
+  // Strip ?query suffix.
+  let s = identifier
+    .split_once('?')
+    .map_or(identifier, |(path, _)| path);
+
+  // Strip module-type prefix and trailing metadata.
+  // e.g. "css|./path/to/file.css|0||||}" → "./path/to/file.css"
+  let s = if let Some((_, rest)) = s.split_once('|') {
+    rest.split('|').next().unwrap_or(rest)
   } else {
-    Some(stem.to_string())
+    s
+  };
+
+  // Normalize Windows backslashes to forward slashes so that all subsequent
+  // string operations work uniformly regardless of platform.
+  use cow_utils::CowUtils;
+  let s = s.cow_replace('\\', "/");
+  let s = s.as_ref();
+
+  let last_slash = s.rfind('/');
+  let filename = last_slash.map_or(s, |p| &s[p + 1..]);
+  let stem = filename.rsplit_once('.').map_or(filename, |(name, _)| name);
+
+  if stem != "index" {
+    return Some(stem.to_owned());
   }
+
+  // For index files inside node_modules, extract the package name.
+  if let Some(nm_pos) = s.rfind("node_modules/") {
+    let after_nm = &s[nm_pos + "node_modules/".len()..];
+    let pkg_end = if after_nm.starts_with('@') {
+      // Scoped package (@scope/pkg): find the second '/'.
+      let first = after_nm.find('/')?;
+      first + 1 + after_nm[first + 1..].find('/')?
+    } else {
+      after_nm.find('/')?
+    };
+    return Some(after_nm[..pkg_end].to_owned());
+  }
+
+  // Fallback: parent directory name.
+  let dir = &s[..last_slash?];
+  let start = dir.rfind('/').map_or(0, |p| p + 1);
+  Some(dir[start..].to_owned())
 }
 
 /// For unnamed dynamic-import chunks with exactly one root module,
@@ -508,14 +836,18 @@ pub(crate) fn assign_dyn_import_chunk_short_names(compilation: &mut Compilation)
   let module_graph = compilation.get_module_graph();
 
   // Collect all existing named chunks
-  let mut used_names: FxHashMap<String, usize> = FxHashMap::default();
+  let mut used_names: FxHashMap<String, usize> = FxHashMap::with_capacity_and_hasher(
+    compilation.build_chunk_graph_artifact.named_chunks.len(),
+    Default::default(),
+  );
   for name in compilation.build_chunk_graph_artifact.named_chunks.keys() {
     used_names.insert(name.clone(), 1);
   }
 
   // Collect candidates: (chunk_ukey, root_module_identifier) for unnamed non-initial chunks
   // with exactly one root module
-  let mut candidates: Vec<(ChunkUkey, ModuleIdentifier)> = Vec::new();
+  let mut candidates: Vec<(ChunkUkey, ModuleIdentifier)> =
+    Vec::with_capacity(compilation.build_chunk_graph_artifact.chunk_by_ukey.len());
 
   for (chunk_ukey, chunk) in compilation.build_chunk_graph_artifact.chunk_by_ukey.iter() {
     // Skip chunks that already have a name
@@ -533,6 +865,9 @@ pub(crate) fn assign_dyn_import_chunk_short_names(compilation: &mut Compilation)
         chunk_ukey,
         module_graph,
         &compilation.module_graph_cache_artifact,
+        &compilation
+          .build_module_graph_artifact
+          .side_effects_state_artifact,
         &compilation.exports_info_artifact,
       );
     if root_modules.len() == 1 {
@@ -541,12 +876,14 @@ pub(crate) fn assign_dyn_import_chunk_short_names(compilation: &mut Compilation)
   }
 
   // Sort by module identifier for deterministic ordering
-  candidates.sort_by(|a, b| a.1.cmp(&b.1));
+  candidates.sort_by_key(|a| a.1);
 
   // Compute short names and track duplicates
   // name_to_chunks: maps base_name → list of (chunk_ukey, module_identifier) in sorted order
-  let mut name_to_chunks: Vec<(String, Vec<(ChunkUkey, ModuleIdentifier)>)> = Vec::new();
-  let mut name_index_map: FxHashMap<String, usize> = FxHashMap::default();
+  let mut name_to_chunks: Vec<(String, Vec<(ChunkUkey, ModuleIdentifier)>)> =
+    Vec::with_capacity(candidates.len());
+  let mut name_index_map: FxHashMap<String, usize> =
+    FxHashMap::with_capacity_and_hasher(candidates.len(), Default::default());
 
   for (chunk_ukey, module_id) in &candidates {
     let Some(module_path) = module_graph
@@ -569,7 +906,7 @@ pub(crate) fn assign_dyn_import_chunk_short_names(compilation: &mut Compilation)
   }
 
   // Assign names, handling deduplication
-  let mut assignments: Vec<(ChunkUkey, String)> = Vec::new();
+  let mut assignments: Vec<(ChunkUkey, String)> = Vec::with_capacity(candidates.len());
 
   for (base_name, chunks) in &name_to_chunks {
     if chunks.len() == 1 && !used_names.contains_key(base_name) {
@@ -610,5 +947,133 @@ pub(crate) fn assign_dyn_import_chunk_short_names(compilation: &mut Compilation)
       .build_chunk_graph_artifact
       .named_chunks
       .insert(name, chunk_ukey);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::short_name_from_identifier;
+
+  #[test]
+  fn short_name_non_index_file() {
+    assert_eq!(
+      short_name_from_identifier("/path/to/src/app.js"),
+      Some("app".into())
+    );
+  }
+
+  #[test]
+  fn short_name_index_uses_parent_dir() {
+    assert_eq!(
+      short_name_from_identifier("/path/to/src/index.js"),
+      Some("src".into())
+    );
+  }
+
+  #[test]
+  fn short_name_node_modules_flat() {
+    assert_eq!(
+      short_name_from_identifier("node_modules/lib/index.js"),
+      Some("lib".into())
+    );
+  }
+
+  #[test]
+  fn short_name_node_modules_nested() {
+    // The main bug: node_modules/lib/dist/index.js should return "lib", not "dist"
+    assert_eq!(
+      short_name_from_identifier("node_modules/lib/dist/index.js"),
+      Some("lib".into())
+    );
+    assert_eq!(
+      short_name_from_identifier("/abs/path/node_modules/my-pkg/lib/index.js"),
+      Some("my-pkg".into())
+    );
+  }
+
+  #[test]
+  fn short_name_node_modules_scoped() {
+    assert_eq!(
+      short_name_from_identifier("node_modules/@scope/pkg/dist/index.js"),
+      Some("@scope/pkg".into())
+    );
+    assert_eq!(
+      short_name_from_identifier("/abs/node_modules/@org/lib/src/index.js"),
+      Some("@org/lib".into())
+    );
+  }
+
+  #[test]
+  fn short_name_node_modules_non_index() {
+    // Non-index files in node_modules should use the stem, not the package name
+    assert_eq!(
+      short_name_from_identifier("node_modules/lib/dist/utils.js"),
+      Some("utils".into())
+    );
+  }
+
+  #[test]
+  fn short_name_strips_query() {
+    assert_eq!(
+      short_name_from_identifier("/path/to/src/app.js?query=1"),
+      Some("app".into())
+    );
+    assert_eq!(
+      short_name_from_identifier("/path/to/src/index.js?v=2&hash=abc"),
+      Some("src".into())
+    );
+    assert_eq!(
+      short_name_from_identifier("node_modules/lib/dist/index.js?query"),
+      Some("lib".into())
+    );
+  }
+
+  #[test]
+  fn short_name_strips_module_type_prefix() {
+    assert_eq!(
+      short_name_from_identifier("css|./src/style.css|0||||}"),
+      Some("style".into())
+    );
+    assert_eq!(
+      short_name_from_identifier("css|./node_modules/lib/dist/index.css|0||||}"),
+      Some("lib".into())
+    );
+    assert_eq!(
+      short_name_from_identifier("css|./node_modules/@scope/pkg/dist/index.css|0||||}"),
+      Some("@scope/pkg".into())
+    );
+    // type prefix without trailing metadata
+    assert_eq!(
+      short_name_from_identifier("css-module|./src/app.module.css"),
+      Some("app.module".into())
+    );
+  }
+
+  #[test]
+  fn short_name_strips_both_prefix_and_query() {
+    assert_eq!(
+      short_name_from_identifier("css|./src/style.css?inline|0||||}"),
+      Some("style".into())
+    );
+  }
+
+  #[test]
+  fn short_name_windows_backslash_paths() {
+    assert_eq!(
+      short_name_from_identifier(r"C:\repo\src\app.js"),
+      Some("app".into())
+    );
+    assert_eq!(
+      short_name_from_identifier(r"C:\repo\src\index.js"),
+      Some("src".into())
+    );
+    assert_eq!(
+      short_name_from_identifier(r"C:\repo\node_modules\lib\dist\index.js"),
+      Some("lib".into())
+    );
+    assert_eq!(
+      short_name_from_identifier(r"C:\repo\node_modules\@scope\pkg\dist\index.js"),
+      Some("@scope/pkg".into())
+    );
   }
 }

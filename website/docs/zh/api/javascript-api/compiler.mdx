@@ -1,3 +1,7 @@
+---
+description: 'Compiler 是 Rspack 内部的核心对象，当你调用 Rspack 的 JavaScript API 或 CLI 时，都会创建一个 Compiler 实例。'
+---
+
 import StatsType from '../../types/stats.mdx';
 import CompilerType from '../../types/compiler.mdx';
 import LoggerType from '../../types/logger.mdx';
@@ -12,7 +16,7 @@ import { Badge } from '@theme';
 
 # Compiler
 
-Compiler 是 Rspack 内部的核心对象，当你调用 Rspack 的 [JavaScript API](/api/javascript-api/index) 或 [CLI](/api/cli) 时，都会创建一个 Compiler 实例。
+Compiler 是 Rspack 内部的核心对象，当你调用 Rspack 的 [JavaScript API](/api/javascript-api/) 或 [CLI](/api/cli) 时，都会创建一个 Compiler 实例。
 
 它提供了 [run](#run) 和 [watch](#watch) 等方法来启动构建，同时暴露了丰富的 [Compiler 钩子](/api/plugin-api/compiler-hooks)，使 Rspack 插件能够干预构建的各个阶段。
 
@@ -270,7 +274,7 @@ function isChild(): boolean;
 
 获取当前的 `@rspack/core` 的导出，以此来获取关联的内部对象。当你无法直接引用 `@rspack/core`，或者存在多个 Rspack 实例时很有用。
 
-一个常见的例子是在 Rspack 插件中获取 [sources](/api/javascript-api/index#sources-对象) 对象：
+一个常见的例子是在 Rspack 插件中获取 [sources](/api/javascript-api/#sources-对象) 对象：
 
 ```js
 const { RawSource } = compiler.rspack.sources;
@@ -316,24 +320,49 @@ console.log(compiler.webpack === compiler.rspack); // true
 
 - **类型：** `RspackOptionsNormalized`
 
-获取根 Compiler 所使用的完整[构建配置](/config/index)。
+获取根 Compiler 所使用的完整[构建配置](/config/)。
 
 ### target
 
-- **类型：** `{ targets: Record<string, string>, esVersion: number }`
+- **类型：**
 
-从 [`target`](/config/target) 配置中推断出。这对需要访问目标环境信息的插件和 loader 作者非常有用。
+```ts
+type CompilerTarget = {
+  // ECMAScript 版本
+  esVersion?: number | null;
+  // 包含版本号的平台名称
+  targets?: Record<string, string> | null;
+};
+```
 
-- `targets`: 带有版本的平台字符串数组 (例如：`{ 'chrome': '87', 'firefox': '78', 'node': '18' }`)。
-- `esVersion`: ECMAScript 版本号 (例如：`5`, `2015`, `2022`)。
+从 [target](/config/target) 配置中推断出。这对需要访问目标环境信息的插件和 loader 作者非常有用。
 
-在自定义 loader 中使用 `compiler.target` 设置默认 targets 的示例：
+- `targets`: 包含平台名称及其版本的对象（例如：`{ 'chrome': '87', 'firefox': '78', 'node': '18' }`）。
+- `esVersion`: ECMAScript 版本号（例如：`5`, `2015`, `2022`）。
+
+例如，在插件中访问 `compiler.target`：
+
+```js
+class ExamplePlugin {
+  apply(compiler) {
+    compiler.hooks.initialize.tap('ExamplePlugin', () => {
+      const { targets, esVersion } = compiler.target ?? {};
+      console.log(targets, esVersion);
+    });
+  }
+}
+```
+
+或是在自定义 loader 中访问 `compiler.target`：
 
 ```js title="my-loader.js"
 export default function myLoader(source) {
   const options = this.getOptions();
+  const compilerTarget = this._compiler.target ?? {};
   // 使用用户指定的 targets，或者回退到 Rspack 推断出的 targets
-  const targets = options.targets ?? this._compiler.target.targets;
+  const targets = options.targets ?? compilerTarget.targets;
+  // 需要时回退到 Rspack 推断出的 ECMAScript 版本
+  const ecmaVersion = options.ecmaVersion ?? compilerTarget.esVersion;
   // 使用 targets 进行转换...
   return transform(source, { targets, ecmaVersion });
 }
@@ -426,12 +455,8 @@ rspack(
 也可以通过 `new MultiCompiler` 创建：
 
 ```js
-const compiler1 = new Compiler({
-  /* */
-});
-const compiler2 = new Compiler({
-  /* */
-});
+const compiler1 = new Compiler({/* */});
+const compiler2 = new Compiler({/* */});
 
 new MultiCompiler([compiler1, compiler2]);
 
@@ -552,7 +577,7 @@ getInfrastructureLogger(name: string): Logger;
 
 - **类型：** `RspackOptionsNormalized[]`
 
-获取各个 Compiler 所使用的完整[构建配置](/config/index)。
+获取各个 Compiler 所使用的完整[构建配置](/config/)。
 
 #### inputFileSystem
 

@@ -1,10 +1,9 @@
-use std::hash::Hash;
-
 use rspack_cacheable::cacheable;
+use rspack_hash::RspackHasher;
 
 use crate::{
   DependencyId, ExportsInfoArtifact, ModuleGraph, ModuleGraphCacheArtifact, ModuleIdentifier,
-  RuntimeSpec,
+  RuntimeSpec, SideEffectsStateArtifact,
 };
 
 #[cacheable]
@@ -23,7 +22,7 @@ pub struct ModuleGraphConnection {
   conditional: bool,
 }
 
-impl Hash for ModuleGraphConnection {
+impl std::hash::Hash for ModuleGraphConnection {
   fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
     self.dependency_id.hash(state);
   }
@@ -63,13 +62,20 @@ impl ModuleGraphConnection {
     module_graph: &ModuleGraph,
     runtime: Option<&RuntimeSpec>,
     module_graph_cache: &ModuleGraphCacheArtifact,
+    side_effects_state_artifact: &SideEffectsStateArtifact,
     exports_info_artifact: &ExportsInfoArtifact,
   ) -> bool {
     if !self.conditional {
       return self.active;
     }
     module_graph
-      .get_condition_state(self, runtime, module_graph_cache, exports_info_artifact)
+      .get_condition_state(
+        self,
+        runtime,
+        module_graph_cache,
+        side_effects_state_artifact,
+        exports_info_artifact,
+      )
       .is_not_false()
   }
 
@@ -78,14 +84,19 @@ impl ModuleGraphConnection {
     module_graph: &ModuleGraph,
     runtime: Option<&RuntimeSpec>,
     module_graph_cache: &ModuleGraphCacheArtifact,
+    side_effects_state_artifact: &SideEffectsStateArtifact,
     exports_info_artifact: &ExportsInfoArtifact,
   ) -> bool {
     if !self.conditional {
       return self.active;
     }
-    module_graph
-      .get_condition_state(self, runtime, module_graph_cache, exports_info_artifact)
-      .is_true()
+    module_graph.is_connection_active(
+      self,
+      runtime,
+      module_graph_cache,
+      side_effects_state_artifact,
+      exports_info_artifact,
+    )
   }
 
   pub fn active_state(
@@ -93,13 +104,20 @@ impl ModuleGraphConnection {
     module_graph: &ModuleGraph,
     runtime: Option<&RuntimeSpec>,
     module_graph_cache: &ModuleGraphCacheArtifact,
+    side_effects_state_artifact: &SideEffectsStateArtifact,
     exports_info_artifact: &ExportsInfoArtifact,
   ) -> ConnectionState {
     if !self.conditional {
       return ConnectionState::Active(self.active);
     }
 
-    module_graph.get_condition_state(self, runtime, module_graph_cache, exports_info_artifact)
+    module_graph.get_condition_state(
+      self,
+      runtime,
+      module_graph_cache,
+      side_effects_state_artifact,
+      exports_info_artifact,
+    )
   }
 
   pub fn module_identifier(&self) -> &ModuleIdentifier {
@@ -120,6 +138,19 @@ pub enum ConnectionState {
   CircularConnection,
   // Module itself is not connected, but transitive modules are connected transitively.
   TransitiveOnly,
+}
+
+impl rspack_hash::RspackHash for ConnectionState {
+  fn hash(&self, state: &mut RspackHasher) {
+    match self {
+      ConnectionState::Active(value) => {
+        "active".hash(state);
+        value.hash(state);
+      }
+      ConnectionState::CircularConnection => "circular".hash(state),
+      ConnectionState::TransitiveOnly => "transitive-only".hash(state),
+    }
+  }
 }
 
 impl ConnectionState {

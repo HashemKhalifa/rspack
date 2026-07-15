@@ -55,7 +55,7 @@ impl Cache for MixedCache {
     self.persistent.before_build_module_graph(compilation).await;
   }
 
-  async fn after_build_module_graph(&self, compilation: &Compilation) {
+  async fn after_build_module_graph(&mut self, compilation: &Compilation) {
     // Save to persistent cache
     self.persistent.after_build_module_graph(compilation).await;
   }
@@ -213,6 +213,16 @@ impl Cache for MixedCache {
     self.persistent.after_chunk_asset(compilation).await;
   }
 
+  // PROCESS_ASSETS hooks
+  async fn before_process_assets(&mut self, compilation: &mut Compilation) {
+    self.memory.before_process_assets(compilation).await;
+    self.persistent.before_process_assets(compilation).await;
+  }
+
+  async fn after_process_assets(&mut self, compilation: &Compilation) {
+    self.persistent.after_process_assets(compilation).await;
+  }
+
   // EMIT_ASSETS hooks
   async fn before_emit_assets(&mut self, compilation: &mut Compilation) {
     self.memory.before_emit_assets(compilation).await;
@@ -221,5 +231,9 @@ impl Cache for MixedCache {
 
   async fn after_emit_assets(&self, compilation: &Compilation) {
     self.persistent.after_emit_assets(compilation).await;
+  }
+
+  async fn close(&self) {
+    self.persistent.close().await;
   }
 }

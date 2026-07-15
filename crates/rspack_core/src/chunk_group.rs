@@ -3,11 +3,12 @@ use std::{
   fmt::{self, Display},
 };
 
-use indexmap::IndexSet;
 use itertools::Itertools;
 use rspack_cacheable::cacheable;
-use rspack_collections::{DatabaseItem, IdentifierMap};
+use rspack_collections::IdentifierMap;
 use rspack_error::{Result, error};
+use rspack_hash::{RspackHash, RspackHasher};
+use rspack_util::fx_hash::FxIndexSet;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 
 use crate::{
@@ -23,14 +24,6 @@ pub struct OriginRecord {
   pub request: Option<String>,
 }
 
-impl DatabaseItem for ChunkGroup {
-  type ItemUkey = ChunkGroupUkey;
-
-  fn ukey(&self) -> Self::ItemUkey {
-    self.ukey
-  }
-}
-
 #[derive(Debug, Clone)]
 pub struct ChunkGroup {
   pub ukey: ChunkGroupUkey,
@@ -38,15 +31,15 @@ pub struct ChunkGroup {
   pub chunks: Vec<ChunkUkey>,
   pub index: Option<u32>,
   pub parents: FxHashSet<ChunkGroupUkey>,
-  pub(crate) module_pre_order_indices: IdentifierMap<usize>,
-  pub(crate) module_post_order_indices: IdentifierMap<usize>,
+  pub(crate) module_pre_order_indices: IdentifierMap<u32>,
+  pub(crate) module_post_order_indices: IdentifierMap<u32>,
 
   // keep order for children
-  pub children: IndexSet<ChunkGroupUkey>,
+  pub children: FxIndexSet<ChunkGroupUkey>,
   async_entrypoints: FxHashSet<ChunkGroupUkey>,
   // ChunkGroupInfo
-  pub(crate) next_pre_order_index: usize,
-  pub(crate) next_post_order_index: usize,
+  pub(crate) next_pre_order_index: u32,
+  pub(crate) next_post_order_index: u32,
   // Entrypoint
   pub(crate) runtime_chunk: Option<ChunkUkey>,
   pub(crate) entrypoint_chunk: Option<ChunkUkey>,
@@ -63,6 +56,10 @@ impl Default for ChunkGroup {
 }
 
 impl ChunkGroup {
+  pub fn ukey(&self) -> ChunkGroupUkey {
+    self.ukey
+  }
+
   pub fn new(kind: ChunkGroupKind) -> Self {
     Self {
       ukey: ChunkGroupUkey::new(),
@@ -87,7 +84,7 @@ impl ChunkGroup {
     self.parents.iter()
   }
 
-  pub fn module_pre_order_index(&self, module_identifier: &ModuleIdentifier) -> Option<usize> {
+  pub fn module_pre_order_index(&self, module_identifier: &ModuleIdentifier) -> Option<u32> {
     // A module could split into another ChunkGroup, which doesn't have the module_post_order_indices of the module
     self
       .module_pre_order_indices
@@ -99,7 +96,7 @@ impl ChunkGroup {
     self.children.iter()
   }
 
-  pub fn module_post_order_index(&self, module_identifier: &ModuleIdentifier) -> Option<usize> {
+  pub fn module_post_order_index(&self, module_identifier: &ModuleIdentifier) -> Option<u32> {
     // A module could split into another ChunkGroup, which doesn't have the module_post_order_indices of the module
     self
       .module_post_order_indices
@@ -445,9 +442,27 @@ impl EntryRuntime {
   }
 }
 
+impl RspackHash for EntryRuntime {
+  fn hash(&self, state: &mut RspackHasher) {
+    match self {
+      EntryRuntime::String(s) => s.hash(state),
+      EntryRuntime::False => "false".hash(state),
+    }
+  }
+}
+
+impl Display for EntryRuntime {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      EntryRuntime::String(s) => f.write_str(s),
+      EntryRuntime::False => f.write_str("false"),
+    }
+  }
+}
+
 // pub type EntryRuntime = String;
 #[cacheable]
-#[derive(Debug, Default, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Hash, PartialEq, Eq, rspack_hash::RspackHash)]
 pub struct EntryOptions {
   pub name: Option<String>,
   pub runtime: Option<EntryRuntime>,
@@ -520,7 +535,7 @@ impl Display for ChunkGroupOrderKey {
 }
 
 #[cacheable]
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, rspack_hash::RspackHash)]
 pub struct ChunkGroupOptions {
   pub name: Option<String>,
   pub preload_order: Option<i32>,
@@ -549,10 +564,25 @@ impl ChunkGroupOptions {
 }
 
 #[cacheable]
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GroupOptions {
   Entrypoint(Box<EntryOptions>),
   ChunkGroup(ChunkGroupOptions),
+}
+
+impl RspackHash for GroupOptions {
+  fn hash(&self, state: &mut RspackHasher) {
+    match self {
+      GroupOptions::Entrypoint(options) => {
+        "entrypoint".hash(state);
+        options.hash(state);
+      }
+      GroupOptions::ChunkGroup(options) => {
+        "chunk-group".hash(state);
+        options.hash(state);
+      }
+    }
+  }
 }
 
 impl GroupOptions {

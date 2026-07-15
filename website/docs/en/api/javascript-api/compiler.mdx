@@ -1,3 +1,7 @@
+---
+description: "The Compiler is a core object in Rspack. A Compiler instance is created when you call Rspack's JavaScript API or CLI"
+---
+
 import StatsType from '../../types/stats.mdx';
 import CompilerType from '../../types/compiler.mdx';
 import LoggerType from '../../types/logger.mdx';
@@ -12,7 +16,7 @@ import { Badge } from '@theme';
 
 # Compiler
 
-The Compiler is a core object in Rspack. A Compiler instance is created when you call Rspack's [JavaScript API](/api/javascript-api/index) or [CLI](/api/cli).
+The Compiler is a core object in Rspack. A Compiler instance is created when you call Rspack's [JavaScript API](/api/javascript-api/) or [CLI](/api/cli).
 
 It provides methods like [run](#run) and [watch](#watch) to start builds, and exposes [Compiler hooks](/api/plugin-api/compiler-hooks) that allow plugins to hook into different stages of the build process.
 
@@ -270,7 +274,7 @@ See [compiler hooks](/api/plugin-api/compiler-hooks) for more details.
 
 Get the exports of @rspack/core to obtain the associated internal objects. This is especially useful when you cannot directly reference `@rspack/core` or there are multiple Rspack instances.
 
-A common example is accessing the [sources](/api/javascript-api/index#sources-object) object in a Rspack plugin:
+A common example is accessing the [sources](/api/javascript-api/#sources-object) object in a Rspack plugin:
 
 ```js
 const { RawSource } = compiler.rspack.sources;
@@ -320,20 +324,45 @@ Get the full options used by this compiler.
 
 ### target
 
-- **Type:** `{ targets?: Record<string, string>; esVersion?: number }`
+- **Type:**
+
+```ts
+type CompilerTarget = {
+  // ECMAScript version
+  esVersion?: number | null;
+  // Platform names with versions
+  targets?: Record<string, string> | null;
+};
+```
 
 Get the target information derived from the [`target`](/config/target) configuration. This is useful for plugin and loader authors who need to access the target environment information.
 
 - `targets`: An object of platform names and their versions (e.g., `{ 'chrome': '87', 'firefox': '78', 'node': '18' }`).
 - `esVersion`: The ECMAScript version number (e.g., `5`, `2015`, `2022`).
 
-Example of using `compiler.target` in a custom loader to set default targets:
+For example, access `compiler.target` in a plugin:
+
+```js
+class ExamplePlugin {
+  apply(compiler) {
+    compiler.hooks.initialize.tap('ExamplePlugin', () => {
+      const { targets, esVersion } = compiler.target ?? {};
+      console.log(targets, esVersion);
+    });
+  }
+}
+```
+
+Or access `compiler.target` in a custom loader:
 
 ```js title="my-loader.js"
 export default function myLoader(source) {
   const options = this.getOptions();
+  const compilerTarget = this._compiler.target ?? {};
   // Use user-specified targets, or fall back to Rspack's derived targets
-  const targets = options.targets ?? this._compiler.target.targets;
+  const targets = options.targets ?? compilerTarget.targets;
+  // Fall back to Rspack's derived ECMAScript version when needed
+  const ecmaVersion = options.ecmaVersion ?? compilerTarget.esVersion;
   // Use targets for transformation...
   return transform(source, { targets, ecmaVersion });
 }
@@ -426,12 +455,8 @@ rspack(
 It can also be created through `new MultiCompiler`:
 
 ```js
-const compiler1 = new Compiler({
-  /* */
-});
-const compiler2 = new Compiler({
-  /* */
-});
+const compiler1 = new Compiler({/* */});
+const compiler2 = new Compiler({/* */});
 
 new MultiCompiler([compiler1, compiler2]);
 
@@ -552,7 +577,7 @@ Get all included compilers.
 
 - **Type:** `RspackOptionsNormalized[]`
 
-Get all the [full options](/config/index) used by the compilers.
+Get all the [full options](/config/) used by the compilers.
 
 #### inputFileSystem
 

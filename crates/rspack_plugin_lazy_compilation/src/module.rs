@@ -1,21 +1,20 @@
 use std::{borrow::Cow, sync::Arc};
 
-use rspack_cacheable::{cacheable, cacheable_dyn};
+use rspack_cacheable::{cacheable, cacheable_dyn, with::AsVec};
 use rspack_collections::Identifiable;
 use rspack_core::{
   AsyncDependenciesBlock, AsyncDependenciesBlockIdentifier, BoxDependency, BoxModule, BuildContext,
   BuildInfo, BuildMeta, BuildResult, ChunkGraph, CodeGenerationResult, Compilation, Context,
   DependenciesBlock, DependencyId, DependencyRange, FactoryMeta, ImportPhase, LibIdentOptions,
   Module, ModuleArgument, ModuleCodeGenerationContext, ModuleFactoryCreateData, ModuleGraph,
-  ModuleIdentifier, ModuleLayer, ModuleType, RuntimeGlobals, RuntimeSpec, SourceType,
-  ValueCacheVersions, impl_module_meta_info, module_update_hash,
+  ModuleIdentifier, ModuleLayer, ModuleType, OutputOptions, RuntimeGlobals, RuntimeSpec,
+  SourceType, ValueCacheVersions, impl_module_meta_info, module_update_hash,
   rspack_sources::{BoxSource, RawStringSource},
 };
 use rspack_error::{Result, impl_empty_diagnosable_trait};
-use rspack_hash::{RspackHash, RspackHashDigest};
+use rspack_hash::{RspackHash, RspackHashDigest, RspackHasher};
 use rspack_plugin_javascript::dependency::CommonJsRequireDependency;
 use rspack_util::{
-  ext::DynHash,
   json_stringify,
   source_map::{ModuleSourceMapConfig, SourceMapKind},
 };
@@ -27,6 +26,23 @@ use crate::{
 
 static MODULE_TYPE: ModuleType = ModuleType::JsAuto;
 static SOURCE_TYPE: [SourceType; 1] = [SourceType::JavaScript];
+
+// Library types whose wrappers pass externals as closure arguments baked into the entry chunk.
+const CLOSURE_LIBRARY_TYPES: [&str; 5] = ["umd", "umd2", "amd", "amd-require", "system"];
+
+fn has_closure_library(output: &OutputOptions) -> bool {
+  if let Some(enabled) = &output.enabled_library_types
+    && enabled
+      .iter()
+      .any(|library_type| CLOSURE_LIBRARY_TYPES.contains(&library_type.as_str()))
+  {
+    return true;
+  }
+  output
+    .library
+    .as_ref()
+    .is_some_and(|library| CLOSURE_LIBRARY_TYPES.contains(&library.library_type.as_str()))
+}
 
 #[cacheable]
 #[derive(Debug)]
@@ -50,6 +66,10 @@ pub(crate) struct LazyCompilationProxyModule {
   resource: String,
   active: bool,
   client: String,
+  // Immutable once collected from config; shared across every proxy module as a
+  // slice so each clones the `Arc`, not the whole list.
+  #[cacheable(with=AsVec)]
+  reserved_externals: Arc<[String]>,
   need_build: bool,
 }
 
@@ -73,6 +93,7 @@ impl LazyCompilationProxyModule {
     resource: String,
     active: bool,
     client: String,
+    reserved_externals: Arc<[String]>,
   ) -> Self {
     let lib_ident = lib_ident.map(|s| format!("{s}!lazy-compilation-proxy"));
 
@@ -100,6 +121,7 @@ impl LazyCompilationProxyModule {
       resource,
       active,
       client,
+      reserved_externals,
       need_build: false,
     }
   }
@@ -165,7 +187,7 @@ impl Module for LazyCompilationProxyModule {
 
   async fn build(
     mut self: Box<Self>,
-    _build_context: BuildContext,
+    build_context: BuildContext,
     _compilation: Option<&Compilation>,
   ) -> Result<BuildResult> {
     let client_dep = CommonJsRequireDependency::new(
@@ -173,7 +195,6 @@ impl Module for LazyCompilationProxyModule {
       DependencyRange::new(0, 0),
       None,
       false,
-      None,
       None,
     );
     let mut dependencies = vec![];
@@ -191,6 +212,20 @@ impl Module for LazyCompilationProxyModule {
         vec![Box::new(dep)],
         None,
       )));
+    } else if has_closure_library(&build_context.compiler_options.output) {
+      // Reserve statically-declared externals on the inactive proxy so the
+      // initial entry chunk's library wrapper already exposes their closure
+      // identifiers. Once the proxy activates and the lazily-built module
+      // references those externals, the identifiers resolve instead of throwing.
+      for request in self.reserved_externals.iter() {
+        dependencies.push(Box::new(CommonJsRequireDependency::new(
+          request.clone(),
+          DependencyRange::new(0, 0),
+          None,
+          false,
+          None,
+        )) as BoxDependency);
+      }
     }
 
     Ok(BuildResult {
@@ -226,7 +261,7 @@ impl Module for LazyCompilationProxyModule {
       runtime_template.render_runtime_globals(&RuntimeGlobals::REQUIRE),
       ChunkGraph::get_module_id(&compilation.module_ids_artifact, *client_module)
         .expect("should have module id"),
-      serde_json::to_string(&self.identifier).expect("should serialize identifier")
+      simd_json::to_string(&self.identifier).expect("should serialize identifier")
     );
 
     let module_argument = runtime_template.render_module_argument(ModuleArgument::Module);
@@ -295,10 +330,10 @@ impl Module for LazyCompilationProxyModule {
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
   ) -> Result<RspackHashDigest> {
-    let mut hasher = RspackHash::from(&compilation.options.output);
+    let mut hasher = RspackHasher::from(&compilation.options.output);
     module_update_hash(self, &mut hasher, compilation, runtime);
-    self.active.dyn_hash(&mut hasher);
-    self.identifier.dyn_hash(&mut hasher);
+    self.active.hash(&mut hasher);
+    self.identifier.hash(&mut hasher);
     Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
 }

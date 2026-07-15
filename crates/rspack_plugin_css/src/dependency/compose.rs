@@ -3,9 +3,9 @@ use rspack_cacheable::{
   with::{AsPreset, AsVec},
 };
 use rspack_core::{
-  AsContextDependency, AsDependencyCodeGeneration, Dependency, DependencyCategory, DependencyId,
-  DependencyRange, DependencyType, ExportsInfoArtifact, ExtendedReferencedExport, FactorizeInfo,
-  ModuleDependency, RuntimeSpec,
+  AsContextDependency, AsDependencyCodeGeneration, CssExportType, Dependency, DependencyCategory,
+  DependencyId, DependencyRange, DependencyType, ExportsInfoArtifact, ExtendedReferencedExport,
+  FactorizeInfo, ModuleDependency, RuntimeSpec,
 };
 use rspack_util::atom::Atom;
 
@@ -17,18 +17,35 @@ pub struct CssComposeDependency {
   #[cacheable(with=AsVec<AsPreset>)]
   names: Vec<Atom>,
   range: DependencyRange,
+  source_order: Option<i32>,
+  export_type: Option<CssExportType>,
   factorize_info: FactorizeInfo,
 }
 
 impl CssComposeDependency {
-  pub fn new(request: String, names: Vec<Atom>, range: DependencyRange) -> Self {
+  pub fn new(
+    request: String,
+    names: Vec<Atom>,
+    range: DependencyRange,
+    export_type: Option<CssExportType>,
+  ) -> Self {
     Self {
       id: DependencyId::new(),
       request,
       names,
       range,
+      source_order: None,
+      export_type,
       factorize_info: Default::default(),
     }
+  }
+
+  pub fn set_source_order(&mut self, source_order: i32) {
+    self.source_order = Some(source_order);
+  }
+
+  pub fn export_type(&self) -> Option<CssExportType> {
+    self.export_type
   }
 }
 
@@ -48,6 +65,10 @@ impl Dependency for CssComposeDependency {
 
   fn range(&self) -> Option<DependencyRange> {
     Some(self.range)
+  }
+
+  fn source_order(&self) -> Option<i32> {
+    self.source_order
   }
 
   fn could_affect_referencing_module(&self) -> rspack_core::AffectType {

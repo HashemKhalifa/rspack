@@ -6,11 +6,10 @@ name              = "rspack_loader_swc"
 repository        = "https://github.com/web-infra-dev/rspack"
 version.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-[package.metadata.cargo-shear]
-ignored = ["swc"]
 [features]
 default = []
 plugin = [
+  "rspack_util/plugin",
   # plugin_transform_host_native cannot be enabled directly to avoid wasmer dependency
   "swc_core/__plugin_transform_host",
   "swc_core/__plugin_transform_host_schema_v1",
@@ -30,6 +29,7 @@ rspack_error                   = { workspace = true }
 rspack_hook                    = { workspace = true }
 rspack_javascript_compiler     = { workspace = true }
 rspack_loader_runner           = { workspace = true }
+rspack_paths                   = { workspace = true }
 rspack_swc_plugin_import       = { workspace = true }
 rspack_swc_plugin_ts_collector = { workspace = true }
 rspack_util                    = { workspace = true }
@@ -41,12 +41,18 @@ sha2                           = { workspace = true }
 sugar_path                     = { workspace = true }
 swc                            = { workspace = true, features = ["manual-tokio-runtime"] }
 swc_config                     = { workspace = true }
-swc_core                       = { workspace = true, features = ["base", "ecma_ast", "common", "ecma_preset_env", "ecma_helpers_inline"] }
+swc_core                       = { workspace = true, features = ["base_react_compiler", "ecma_ast", "common", "ecma_preset_env", "ecma_helpers_inline", "base_module"] }
 tokio                          = { workspace = true }
 tracing                        = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 stacker = { workspace = true }
 
+[dev-dependencies]
+swc_core = { workspace = true, features = ["testing_transform"] }
+
 [lints]
 workspace = true
+
+[lib]
+doctest = false

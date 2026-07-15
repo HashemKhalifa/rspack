@@ -1,8 +1,11 @@
 mod deterministic_module_ids_plugin;
 pub use deterministic_module_ids_plugin::*;
+mod hashed_module_ids_plugin;
+pub use hashed_module_ids_plugin::*;
 mod named_module_ids_plugin;
 pub use named_module_ids_plugin::*;
 pub mod id_helpers;
+pub use id_helpers::ModuleFilterFn;
 mod named_chunk_ids_plugin;
 pub use named_chunk_ids_plugin::*;
 mod deterministic_chunk_ids_plugin;
@@ -13,3 +16,5 @@ mod natural_chunk_ids_plugin;
 pub use natural_chunk_ids_plugin::NaturalChunkIdsPlugin;
 mod occurrence_chunk_ids_plugin;
 pub use occurrence_chunk_ids_plugin::*;
+mod sync_module_ids_plugin;
+pub use sync_module_ids_plugin::*;

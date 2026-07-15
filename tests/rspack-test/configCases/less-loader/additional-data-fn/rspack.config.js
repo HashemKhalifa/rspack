@@ -1,23 +1,27 @@
 /** @type {import("@rspack/core").Configuration} */
 module.exports = {
-	target: "web",
-	node: false,
-	module: {
-		rules: [
-			{
-				test: /\.less$/,
-				use: [
-					{
-						loader: "less-loader",
-						options: {
-							additionalData: (content, loaderContext) => {
-								const { resourcePath, rootContext } = loaderContext;
-								const relativePath = require("path").relative(
-									rootContext,
-									resourcePath
-								);
+  externals: {
+    fs: 'node-commonjs fs',
+    path: 'node-commonjs path',
+  },
+  target: 'web',
+  node: false,
+  module: {
+    rules: [
+      {
+        test: /\.less$/,
+        use: [
+          {
+            loader: 'less-loader',
+            options: {
+              additionalData: (content, loaderContext) => {
+                const { resourcePath, rootContext } = loaderContext;
+                const relativePath = require('path').relative(
+                  rootContext,
+                  resourcePath,
+                );
 
-								return `
+                return `
 										@background: coral;
 										${content};
 										.custom-class {
@@ -25,15 +29,15 @@ module.exports = {
 											relative-path: '${relativePath}';
 										};
 									`;
-							}
-						}
-					}
-				],
-				type: "css",
-				generator: {
-					exportsOnly: false
-				}
-			}
-		]
-	}
+              },
+            },
+          },
+        ],
+        type: 'css',
+        generator: {
+          exportsOnly: false,
+        },
+      },
+    ],
+  },
 };

@@ -1,3 +1,7 @@
+---
+description: "当你使用 resolve.alias 将包名导入（例如 import 'lib'）重定向到 monorepo 或 nodemodules 中的具体目录时，模块的解析方式会发生变化："
+---
+
 import WebpackLicense from '@components/WebpackLicense';
 
 <WebpackLicense from="https://webpack.js.org/configuration/resolve/" />
@@ -10,7 +14,12 @@ import WebpackLicense from '@components/WebpackLicense';
 
 ## resolve.alias
 
-- **类型：** `Record<string, false | string | (string | false)[]>`
+- **类型：**
+
+```ts
+type ResolveAlias = false | Record<string, false | string | (false | string)[]>;
+```
+
 - **默认值：** `{}`
 
 路径别名，例如：
@@ -39,6 +48,18 @@ import WebpackLicense from '@components/WebpackLicense';
 
 如果希望 monorepo 中的各个包依然保持和正常 npm 包一致的解析方式，不建议通过 `alias` 将包名直接指向源码目录。
 推荐的做法是使用包管理器的工作区功能，将子包符号链接到 `node_modules` 中，让它们像普通依赖一样被解析。
+
+### 禁用别名
+
+将 `resolve.alias` 设置为 `false` 会清空合并后的 resolve 选项中的所有别名。它不同于不配置 `resolve.alias` 或设置为 `{}`，后者只是不会新增别名，不会清除从其他 resolve 选项合并来的别名。
+
+```js title="rspack.config.mjs"
+export default {
+  resolve: {
+    alias: false,
+  },
+};
+```
 
 ## resolve.aliasFields
 
@@ -96,9 +117,31 @@ export default {
 - CommonJS 引用会从 `browser` 字段中读取别名配置。
 - 基于 URL 的引用在解析时会优先使用相对路径。
 
-:::tip
-在 `resolve.byDependency` 中定义的选项会与顶层的 `resolve` 配置进行合并，`resolve.byDependency` 的优先级更高。
-:::
+### 合并规则
+
+当请求命中 `resolve.byDependency.esm`、`resolve.byDependency.commonjs` 这类条目时，Rspack 会先取顶层 `resolve` 中的值，再对这个请求类型继续应用对应的 `byDependency` 条目。
+
+- 对象选项按普通对象合并。
+- 数组选项默认会替换当前值。
+- 如果数组里写了 `'...'`，则会在该位置插入顶层的值。
+
+```js title="rspack.config.mjs"
+export default {
+  resolve: {
+    extensions: ['.ts', '.tsx', '.js', '.json'],
+    byDependency: {
+      esm: {
+        extensions: ['.mjs'],
+        // esm 的最终值：['.mjs']
+      },
+      commonjs: {
+        extensions: ['.cjs', '...'],
+        // commonjs 的最终值：['.cjs', '.ts', '.tsx', '.js', '.json']
+      },
+    },
+  },
+};
+```
 
 ## resolve.conditionNames
 
@@ -126,7 +169,7 @@ Rspack 默认的 `conditionNames` 由 [mode](/config/mode)、[target](/config/ta
 ['require', 'module', 'webpack', mode, target];
 
 // 针对 CSS 模块
-['webpack', mode, 'style'];
+[mode, 'style'];
 ```
 
 在上述示例中：
@@ -284,14 +327,18 @@ Rspack 在解析 `import './foo.js'` 时，会依次尝试解析 `'./foo.ts'` �
 ## resolve.extensions
 
 - **类型：** `string[]`
-- **默认值：** `[".js", ".json"]`
+- **默认值：** 取决于依赖类型。常见 JavaScript 模块请求默认是 `[".js", ".json"]`，CSS `@import` 默认是 `[".css"]`。
 
 自动添加导入文件的扩展名。这意味着你可以导入文件，而不需要显式地写它们的扩展名。
 
-例如，当导入 `./index` 时，Rspack 将尝试按以下顺序解析：
+例如，对于常见的 JavaScript 模块请求，当导入 `./index` 时，Rspack 默认会按以下顺序解析：
 
 - `./index.js`
 - `./index.json`
+
+而在 CSS 中写 `@import './base'` 时，Rspack 默认会尝试：
+
+- `./base.css`
 
 ### 示例
 
@@ -309,16 +356,23 @@ export default {
 
 例如，如果同一目录下同时存在 `index.js` 和 `index.ts`，而你的配置是 `['.ts', '.js']`，那么 `import './index'` 将会解析为 `index.ts`。
 
+### 默认值
+
+从实现上看，顶层 `resolve.extensions` 的默认值其实是 `[]`。之所以大多数场景仍然会自动尝试 `.js`、`.json` 或 `.css`，是因为 Rspack 会根据请求类型，从 [resolve.byDependency](#resolvebydependency) 应用对应的默认配置。
+
+如果你不熟悉 [resolve.byDependency](#resolvebydependency)，可以把它理解为"不同引用方式使用不同的 `resolve` 默认值"。例如：
+
+- `import`、`require()` 等常见 JavaScript 模块请求默认使用 `[".js", ".json"]`
+- CSS 的 `@import` 默认使用 `[".css"]`
+
 ### 扩展默认值
 
-注意：显式配置 `resolve.extensions` 会完全覆盖默认数组，这意味着 Rspack 将不再尝试使用默认扩展名进行解析。
-
-如果你希望在自定义扩展名的同时保留默认扩展名，可以使用展开语法 `'...'`：
+如果你希望在添加自定义扩展名的同时保留 Rspack 针对当前依赖类型的默认扩展名，可以使用展开语法 `'...'`：
 
 ```js title="rspack.config.mjs"
 export default {
   resolve: {
-    // 等价于 ['.ts', '.js', '.json']
+    // 对常见 JavaScript 模块请求，等价于 ['.ts', '.js', '.json']
     extensions: ['.ts', '...'],
   },
 };
@@ -331,7 +385,13 @@ export default {
 
 ## resolve.fallback
 
-- **类型：** `Record<string, false | string>`
+- **类型：**
+
+```ts
+type ResolveFallback =
+  false | Record<string, false | string | (false | string)[]>;
+```
+
 - **默认值：** `{}`
 
 当常规解析失败时重定向模块请求。
@@ -409,7 +469,7 @@ export default {
 - **类型：** `string[]`
 - **默认值:** `['imports']`
 
-自定义 package.json 中的 imports 字段，用于提供包的内部请求（以 `#` 开头的请求被视为内部请求）
+自定义 `package.json` 中的 `imports` 字段，用于提供包的内部请求（以 `#` 开头的请求被视为内部请求）。
 
 例如：
 
@@ -426,7 +486,9 @@ export default {
 }
 ```
 
-则当配置为 ["testImports", "imports"] 时, 当前包内 `import value from '#foo'` 的结果为 `src/test/foo.js`。
+则当配置为 `["testImports", "imports"]` 时, 当前包内 `import value from '#foo'` 的结果为 `src/test/foo.js`。
+
+> 查看 [模块解析 - package.json `imports`](/guide/features/module-resolution#packagejson-imports) 了解更多。
 
 ## resolve.mainFields
 
@@ -518,28 +580,6 @@ export default {
 export default {
   resolve: {
     pnp: true,
-  },
-};
-```
-
-## resolve.pnpManifest
-
-- **类型：** `undefined | string | false`
-- **默认值：** `undefined`
-
-使用此选项指定 PnP 清单文件的路径。
-
-- `undefined`: 如果启用 `resolve.pnp` 且未提供此选项，Rspack 将尝试查找最近的 `.pnp.cjs` 文件作为 PnP 清单文件路径。
-- `string`: 强制 Rspack resolver 使用指定的 PnP 清单文件路径。
-- `false`: 不使用全局 PnP 清单，而是分别在每个项目中解析 PnP 清单。这可以支持在 `.yarnrc.yml` 中禁用了 `enableGlobalCache` 的交叉引用项目。
-
-示例：
-
-```js title="rspack.config.mjs"
-export default {
-  resolve: {
-    pnp: true,
-    pnpManifest: path.resolve(__dirname, '.pnp.cjs'),
   },
 };
 ```

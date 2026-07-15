@@ -5,8 +5,7 @@ import {
   type RawAssetParserDataUrl,
   type RawAssetParserOptions,
   type RawAssetResourceGeneratorOptions,
-  type RawCssAutoGeneratorOptions,
-  type RawCssAutoParserOptions,
+  type RawCssAutoOrModuleParserOptions,
   type RawCssGeneratorOptions,
   type RawCssModuleGeneratorOptions,
   type RawCssModuleParserOptions,
@@ -41,6 +40,7 @@ import {
   type PitchLoaderDefinitionFunction,
 } from './adapterRuleUse';
 import type {
+  CacheNormalized,
   ExperimentsNormalized,
   ModuleOptionsNormalized,
   OutputNormalized,
@@ -53,8 +53,10 @@ import type {
   AssetParserDataUrl,
   AssetParserOptions,
   AssetResourceGeneratorOptions,
-  CssAutoGeneratorOptions,
   CssGeneratorOptions,
+  CssAutoOrModuleParserOptions,
+  CssModuleGeneratorOptions,
+  CssModuleParserOptions,
   CssParserOptions,
   GeneratorOptionsByModuleType,
   JavascriptParserOptions,
@@ -78,6 +80,8 @@ export type {
   PitchLoaderDefinitionFunction,
 };
 
+const MAX_U32 = 0xffffffff;
+
 // invariant: `options` is normalized with default value applied
 export const getRawOptions = (
   options: RspackOptionsNormalized,
@@ -100,7 +104,7 @@ export const getRawOptions = (
     }),
     optimization: options.optimization as Required<Optimization>,
     stats: getRawStats(options.stats),
-    cache: options.cache || false,
+    cache: getRawCache(options.cache!),
     experiments,
     incremental: options.incremental,
     node: getRawNode(options.node),
@@ -109,6 +113,34 @@ export const getRawOptions = (
     __references: {},
   };
 };
+
+function getRawCache(cache: CacheNormalized): RawOptions['cache'] {
+  if (cache === false) return false;
+  if (cache.type === 'memory') return cache;
+  const toRawStorageLimit = (name: string, value: number) => {
+    if (value === Infinity) return 0;
+    if (!Number.isSafeInteger(value) || value < 1 || value > MAX_U32) {
+      throw new Error(
+        `Invalid Rspack configuration: "${name}" must be a positive integer (1..${MAX_U32}) or Infinity, get \`${value}\`.`,
+      );
+    }
+    return value;
+  };
+  return {
+    ...cache,
+    maxAge: toRawStorageLimit('cache.maxAge', cache.maxAge!),
+    maxVersions: toRawStorageLimit('cache.maxVersions', cache.maxVersions!),
+    storage: {
+      ...cache.storage,
+      directory: cache.storage.directory!,
+    },
+    snapshot: {
+      immutablePaths: cache.snapshot.immutablePaths!,
+      unmanagedPaths: cache.snapshot.unmanagedPaths!,
+      managedPaths: cache.snapshot.managedPaths!,
+    },
+  };
+}
 
 function getRawOutput(output: Output): RawOutputOptions {
   return {
@@ -122,6 +154,7 @@ function getRawOutputEnvironment(
 ): RawEnvironment {
   return {
     const: Boolean(environment.const),
+    computedProperty: Boolean(environment.computedProperty),
     methodShorthand: Boolean(environment.methodShorthand),
     arrowFunction: Boolean(environment.arrowFunction),
     nodePrefixForCoreModules: Boolean(environment.nodePrefixForCoreModules),
@@ -135,6 +168,7 @@ function getRawOutputEnvironment(
     globalThis: Boolean(environment.globalThis),
     module: Boolean(environment.module),
     optionalChaining: Boolean(environment.optionalChaining),
+    logicalAssignment: Boolean(environment.logicalAssignment),
     templateLiteral: Boolean(environment.templateLiteral),
     importMetaDirnameAndFilename: Boolean(
       environment.importMetaDirnameAndFilename,
@@ -275,17 +309,17 @@ const getRawModuleRule = (
 ): RawModuleRule => {
   // Rule.loader is a shortcut to Rule.use: [ { loader } ].
   // See: https://webpack.js.org/configuration/module/#ruleloader
-  if (rule.loader) {
-    rule.use = [
-      {
-        loader: rule.loader,
-        options: rule.options,
-      },
-    ];
-  }
+  const normalizedUse = rule.loader
+    ? [
+        {
+          loader: rule.loader,
+          options: rule.options,
+        },
+      ]
+    : rule.use;
   let funcUse: undefined | ((rawContext: RawFuncUseCtx) => RawModuleRuleUse[]);
-  if (typeof rule.use === 'function') {
-    const use = rule.use;
+  if (typeof normalizedUse === 'function') {
+    const use = normalizedUse;
     funcUse = (rawContext: RawFuncUseCtx) => {
       const context = {
         ...rawContext,
@@ -308,6 +342,7 @@ const getRawModuleRule = (
     dependency: rule.dependency
       ? getRawRuleSetCondition(rule.dependency)
       : undefined,
+    phase: rule.phase ? getRawRuleSetCondition(rule.phase) : undefined,
     descriptionData: rule.descriptionData
       ? Object.fromEntries(
           Object.entries(rule.descriptionData).map(([k, v]) => [
@@ -335,9 +370,9 @@ const getRawModuleRule = (
     mimetype: rule.mimetype ? getRawRuleSetCondition(rule.mimetype) : undefined,
     sideEffects: rule.sideEffects,
     use:
-      typeof rule.use === 'function'
+      typeof normalizedUse === 'function'
         ? funcUse
-        : createRawModuleRuleUses(rule.use ?? [], `${path}.use`, options),
+        : createRawModuleRuleUses(normalizedUse ?? [], `${path}.use`, options),
     type: rule.type,
     layer: rule.layer,
     parser: rule.parser
@@ -527,19 +562,25 @@ function getRawParserOptions(
   if (type === 'css') {
     return {
       type: 'css',
-      css: getRawCssParserOptions(parser),
+      css: getRawCssParserOptionsForCss(parser),
     };
   }
   if (type === 'css/auto') {
     return {
       type: 'css/auto',
-      cssAuto: getRawCssParserOptions(parser),
+      cssAuto: getRawCssAutoOrModuleParserOptions(parser),
+    };
+  }
+  if (type === 'css/global') {
+    return {
+      type: 'css/global',
+      cssGlobal: getRawCssModuleParserOptions(parser),
     };
   }
   if (type === 'css/module') {
     return {
       type: 'css/module',
-      cssModule: getRawCssParserOptions(parser),
+      cssModule: getRawCssAutoOrModuleParserOptions(parser),
     };
   }
 
@@ -562,10 +603,7 @@ function getRawJavascriptParserOptions(
     dynamicImportPreload: parser.dynamicImportPreload?.toString(),
     dynamicImportPrefetch: parser.dynamicImportPrefetch?.toString(),
     dynamicImportFetchPriority: parser.dynamicImportFetchPriority,
-    importMeta:
-      typeof parser.importMeta === 'boolean'
-        ? String(parser.importMeta)
-        : parser.importMeta,
+    importMeta: getRawImportMeta(parser.importMeta),
     url: parser.url?.toString(),
     exprContextCritical: parser.exprContextCritical,
     unknownContextCritical: parser.unknownContextCritical,
@@ -582,12 +620,7 @@ function getRawJavascriptParserOptions(
       parser.reexportExportsPresence === false
         ? 'false'
         : parser.reexportExportsPresence,
-    worker:
-      typeof parser.worker === 'boolean'
-        ? parser.worker
-          ? ['...']
-          : []
-        : parser.worker,
+    worker: getRawJavascriptParserWorkerOptions(parser.worker),
     overrideStrict: parser.overrideStrict,
     requireAsExpression: parser.requireAsExpression,
     requireAlias: parser.requireAlias,
@@ -596,10 +629,44 @@ function getRawJavascriptParserOptions(
     commonjs: parser.commonjs,
     importDynamic: parser.importDynamic,
     commonjsMagicComments: parser.commonjsMagicComments,
+    createRequire: parser.createRequire,
     typeReexportsPresence: parser.typeReexportsPresence,
     jsx: parser.jsx,
     deferImport: parser.deferImport,
+    sourceImport: parser.sourceImport,
+    importMetaResolve: parser.importMetaResolve,
+    pureFunctions: parser.pureFunctions,
   };
+}
+
+function getRawJavascriptParserWorkerOptions(
+  worker: JavascriptParserOptions['worker'],
+): RawJavascriptParserOptions['worker'] {
+  if (typeof worker === 'boolean') {
+    return worker;
+  }
+  if (Array.isArray(worker)) {
+    return { alias: worker };
+  }
+  return worker;
+}
+
+function getRawImportMeta(
+  importMeta: JavascriptParserOptions['importMeta'],
+): RawJavascriptParserOptions['importMeta'] {
+  if (typeof importMeta === 'boolean') {
+    return String(importMeta);
+  }
+  if (typeof importMeta === 'object' && importMeta !== null) {
+    const rawImportMeta: Record<string, boolean> = {};
+    for (const [property, value] of Object.entries(importMeta)) {
+      if (typeof value === 'boolean') {
+        rawImportMeta[property] = value;
+      }
+    }
+    return rawImportMeta;
+  }
+  return importMeta;
 }
 
 function getRawAssetParserOptions(
@@ -628,12 +695,41 @@ function getRawAssetParserDataUrl(
   );
 }
 
-function getRawCssParserOptions(
-  parser: CssParserOptions,
-): RawCssParserOptions | RawCssAutoParserOptions | RawCssModuleParserOptions {
+function getRawCssModuleParserOptions(
+  parser: CssModuleParserOptions,
+): RawCssModuleParserOptions {
   return {
+    exportType: parser.exportType,
     namedExports: parser.namedExports,
     url: parser.url,
+    import: parser.import,
+    resolveImport: parser.resolveImport as any,
+    animation: parser.animation,
+    container: parser.container,
+    customIdents: parser.customIdents,
+    dashedIdents: parser.dashedIdents,
+    function: parser.function,
+    grid: parser.grid,
+  };
+}
+
+function getRawCssAutoOrModuleParserOptions(
+  parser: CssAutoOrModuleParserOptions,
+): RawCssAutoOrModuleParserOptions {
+  return {
+    ...getRawCssModuleParserOptions(parser),
+    pure: parser.pure,
+  };
+}
+
+function getRawCssParserOptionsForCss(
+  parser: CssParserOptions,
+): RawCssParserOptions {
+  return {
+    exportType: parser.exportType,
+    namedExports: parser.namedExports,
+    url: parser.url,
+    import: parser.import,
     resolveImport: parser.resolveImport as any,
   };
 }
@@ -686,6 +782,12 @@ function getRawGeneratorOptions(
     return {
       type: 'css/auto',
       cssAuto: getRawCssAutoOrModuleGeneratorOptions(generator),
+    };
+  }
+  if (type === 'css/global') {
+    return {
+      type: 'css/global',
+      cssGlobal: getRawCssAutoOrModuleGeneratorOptions(generator),
     };
   }
   if (type === 'css/module') {
@@ -778,10 +880,14 @@ function getRawCssGeneratorOptions(
 }
 
 function getRawCssAutoOrModuleGeneratorOptions(
-  options: CssAutoGeneratorOptions,
-): RawCssAutoGeneratorOptions | RawCssModuleGeneratorOptions {
+  options: CssModuleGeneratorOptions,
+): RawCssModuleGeneratorOptions {
   return {
     localIdentName: options.localIdentName,
+    localIdentHashDigest: options.localIdentHashDigest,
+    localIdentHashDigestLength: options.localIdentHashDigestLength,
+    localIdentHashFunction: options.localIdentHashFunction,
+    localIdentHashSalt: options.localIdentHashSalt,
     exportsConvention: options.exportsConvention,
     exportsOnly: options.exportsOnly,
     esModule: options.esModule,

@@ -79,6 +79,20 @@ const commonLibConfig: LibConfig = {
   },
 };
 
+// TODO: Remove this workaround once rslib/rspack fixes runtime chunk naming
+// for bundled multi-lib builds.
+const withRuntimeChunk = (name: string): Pick<LibConfig, 'tools'> => ({
+  tools: {
+    rspack: {
+      optimization: {
+        runtimeChunk: {
+          name,
+        },
+      },
+    },
+  },
+});
+
 const mfRuntimePlugin: RsbuildPlugin = {
   name: 'mf-runtime',
   setup(api) {
@@ -156,22 +170,25 @@ const codmodPlugin: RsbuildPlugin = {
     }
 
     api.onAfterBuild(() => {
-      const dist = fs.readFileSync(
-        require.resolve(path.resolve(import.meta.dirname, 'dist/index.js')),
-        'utf-8',
-      );
-      const root = parse(Lang.JavaScript, dist).root();
-      const edits = [...replaceBinding(root)];
+      for (const filename of ['index.js', 'worker.js']) {
+        const distPath = require.resolve(
+          path.resolve(import.meta.dirname, 'dist', filename),
+        );
+        const dist = fs.readFileSync(distPath, 'utf-8');
+        const root = parse(Lang.JavaScript, dist).root();
+        const edits = [...replaceBinding(root)];
 
-      fs.writeFileSync(
-        require.resolve(path.resolve(import.meta.dirname, 'dist/index.js')),
-        root.commitEdits(edits),
-      );
+        fs.writeFileSync(distPath, root.commitEdits(edits));
+      }
     });
   },
 };
 
-// Remove `export { rspack as 'module.exports' };` to avoid parsing errors with TypeScript < 5.6.2
+/*
+ * Remove `export { rspack as 'module.exports' }` to:
+ * 1. avoid parse errors in TypeScript < 5.6.2.
+ * 2. prevent namespace imports from degrading under `moduleResolution: 'NodeNext'`, which can break `Rspack.*` type access.
+ */
 const removeDtsExportPlugin: RsbuildPlugin = {
   name: 'remove-dts-export',
   setup(api) {
@@ -180,8 +197,8 @@ const removeDtsExportPlugin: RsbuildPlugin = {
       if (fs.existsSync(dtsPath)) {
         const content = await fs.promises.readFile(dtsPath, 'utf-8');
         const newContent = content.replace(
-          "export { rspack as 'module.exports' };",
-          '',
+          "export { rspack, rspack as 'module.exports' };",
+          'export { rspack };',
         );
         await fs.promises.writeFile(dtsPath, newContent);
       }
@@ -195,12 +212,15 @@ export default defineConfig({
     merge(commonLibConfig, {
       dts: {
         build: true,
+        tsgo: true,
         alias: {
           // alias to pre-bundled types as they are public API
           open: './compiled/open',
           'connect-next': './compiled/connect-next',
           '@rspack/lite-tapable': './compiled/@rspack/lite-tapable/dist',
           'http-proxy-middleware': './compiled/http-proxy-middleware',
+          // Note: the JS bundle resolves to ./compiled/webpack-sources/index.js, while DTS should point to the generated types directory.
+          'webpack-sources': './compiled/webpack-sources/types',
         },
       },
       redirect: {
@@ -217,6 +237,7 @@ export default defineConfig({
       output: {
         externals: [externalAlias, './moduleFederationDefaultRuntime.js'],
       },
+      ...withRuntimeChunk('rslib-runtime-index'),
     }),
     merge(commonLibConfig, {
       source: {
@@ -239,6 +260,7 @@ export default defineConfig({
           worker: './src/loader-runner/worker.ts',
         },
       },
+      ...withRuntimeChunk('rslib-runtime-worker'),
     }),
   ],
 });

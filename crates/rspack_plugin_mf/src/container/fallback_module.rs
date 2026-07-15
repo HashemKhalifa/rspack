@@ -10,13 +10,14 @@ use rspack_core::{
   ModuleCodeGenerationContext, ModuleGraph, ModuleIdentifier, ModuleType, RuntimeGlobals,
   RuntimeSpec, SourceType, impl_module_meta_info, impl_source_map_config, module_update_hash,
   rspack_sources::{BoxSource, RawStringSource, SourceExt},
+  runtime_mode::RuntimeMode,
 };
 use rspack_error::{Result, impl_empty_diagnosable_trait};
-use rspack_hash::{RspackHash, RspackHashDigest};
+use rspack_hash::{RspackHashDigest, RspackHasher};
 use rspack_util::{itoa, source_map::SourceMapKind};
 
 use super::fallback_item_dependency::FallbackItemDependency;
-use crate::utils::json_stringify;
+use crate::utils::{json_stringify, module_identifier_namespace};
 
 #[impl_source_map_config]
 #[cacheable]
@@ -34,12 +35,13 @@ pub struct FallbackModule {
 }
 
 impl FallbackModule {
-  pub fn new(requests: Vec<String>) -> Self {
+  pub fn new(requests: Vec<String>, runtime_mode: RuntimeMode) -> Self {
     let identifier = format!("fallback {}", requests.join(" "));
     let mut requests_len_buffer = itoa::Buffer::new();
     let requests_len_minus_one = requests_len_buffer.format(requests.len() - 1);
+    let namespace = module_identifier_namespace(runtime_mode);
     let lib_ident = format!(
-      "webpack/container/fallback/{}/and {} more",
+      "{namespace}/container/fallback/{}/and {} more",
       requests
         .first()
         .expect("should have at one more requests in FallbackModule"),
@@ -202,7 +204,7 @@ var handleError = function(e) {{
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
   ) -> Result<RspackHashDigest> {
-    let mut hasher = RspackHash::from(&compilation.options.output);
+    let mut hasher = RspackHasher::from(&compilation.options.output);
     module_update_hash(self, &mut hasher, compilation, runtime);
     Ok(hasher.digest(&compilation.options.output.hash_digest))
   }

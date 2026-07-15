@@ -2,25 +2,36 @@ use std::{
   borrow::Cow,
   cmp::Ordering,
   hash::{Hash, Hasher},
+  sync::Arc,
 };
 
+use futures::future::BoxFuture;
 use itertools::{
   EitherOrBoth::{Both, Left, Right},
   Itertools,
 };
-use rspack_collections::{DatabaseItem, Identifier};
+use rspack_collections::Identifier;
 use rspack_core::{
-  BoxModule, Chunk, ChunkByUkey, ChunkGraph, ChunkGroupByUkey, ChunkNamedIdArtifact, ChunkUkey,
-  Compilation, ExportsInfoArtifact, ModuleGraph, ModuleGraphCacheArtifact, ModuleIdentifier,
-  ModuleIdsArtifact, compare_runtime,
+  BoxModule, Chunk, ChunkByUkey, ChunkGraph, ChunkGroupByUkey, ChunkGroupUkey,
+  ChunkNamedIdArtifact, ChunkUkey, Compilation, CompilerId, ExportsInfoArtifact, Module,
+  ModuleGraph, ModuleGraphCacheArtifact, ModuleIdentifier, ModuleIdsArtifact,
+  SideEffectsStateArtifact, compare_runtime,
 };
+use rspack_error::Result;
 use rspack_util::{
   comparators::{compare_ids, compare_numbers},
   identifier::make_paths_relative,
-  itoa,
-  number_hash::get_number_hash,
+  number_hash::get_number_hash_combined,
 };
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+
+pub type ModuleFilterFn =
+  Arc<dyn for<'a> Fn(CompilerId, &'a dyn Module) -> BoxFuture<'a, Result<bool>> + Send + Sync>;
+
+pub(crate) fn should_assign_module_id_without_chunk(module: &dyn Module) -> bool {
+  let build_meta = module.build_meta();
+  build_meta.is_css_module() || build_meta.need_id_in_concatenation()
+}
 
 #[allow(clippy::type_complexity)]
 #[allow(clippy::collapsible_else_if)]
@@ -64,13 +75,46 @@ pub fn get_used_module_ids_and_modules_with_artifact(
         used_ids.insert(module_id.to_string());
       } else {
         if filter.as_ref().is_none_or(|f| (f)(module))
-          && chunk_graph.get_number_of_module_chunks(module.identifier()) != 0
+          && (chunk_graph.get_number_of_module_chunks(module.identifier()) != 0
+            || should_assign_module_id_without_chunk(module.as_ref()))
         {
           modules.push(module.identifier());
         }
       }
     });
   (used_ids, modules)
+}
+
+pub async fn get_used_module_ids_and_modules_with_async_filter(
+  compilation: &Compilation,
+  module_ids_artifact: &ModuleIdsArtifact,
+  filter: Option<&ModuleFilterFn>,
+) -> Result<(FxHashSet<String>, Vec<ModuleIdentifier>)> {
+  let chunk_graph = &compilation.build_chunk_graph_artifact.chunk_graph;
+  let mut modules = vec![];
+  let mut used_ids = FxHashSet::default();
+
+  for module in compilation
+    .get_module_graph()
+    .modules()
+    .map(|(_, module)| module)
+    .filter(|m| m.need_id())
+  {
+    let module_id = ChunkGraph::get_module_id(module_ids_artifact, module.identifier());
+    if let Some(module_id) = module_id {
+      used_ids.insert(module_id.to_string());
+    } else if (chunk_graph.get_number_of_module_chunks(module.identifier()) != 0
+      || should_assign_module_id_without_chunk(module.as_ref()))
+      && match filter {
+        Some(filter) => filter(compilation.compiler_id(), module.as_ref()).await?,
+        None => true,
+      }
+    {
+      modules.push(module.identifier());
+    }
+  }
+
+  Ok((used_ids, modules))
 }
 
 pub fn get_short_module_name(module: &BoxModule, context: &str) -> String {
@@ -131,7 +175,7 @@ pub fn get_hash(s: impl Hash, length: usize) -> String {
 #[allow(clippy::too_many_arguments)]
 pub fn assign_deterministic_ids<T>(
   mut items: Vec<T>,
-  get_name: impl Fn(&T) -> String,
+  get_name: impl for<'b> Fn(&'b T) -> &'b str,
   comparator: impl FnMut(&T, &T) -> Ordering,
   mut assign_id: impl FnMut(&T, usize) -> bool,
   ranges: &[usize],
@@ -159,12 +203,10 @@ pub fn assign_deterministic_ids<T>(
   for item in items {
     let ident = get_name(&item);
     let mut i = salt;
-    let mut i_buffer = itoa::Buffer::new();
-    let mut id = get_number_hash(&format!("{ident}{}", i_buffer.format(i)), range);
+    let mut id = get_number_hash_combined(ident, i, range);
     while !assign_id(&item, id) {
       i += 1;
-      let mut i_buffer = itoa::Buffer::new();
-      id = get_number_hash(&format!("{ident}{}", i_buffer.format(i)), range);
+      id = get_number_hash_combined(ident, i, range);
     }
   }
 }
@@ -203,6 +245,101 @@ pub fn compare_modules_by_pre_order_index_or_identifier(
   }
 }
 
+#[cfg(test)]
+mod tests {
+  use std::cmp::Ordering;
+
+  use rspack_core::{
+    Chunk, ChunkGraph, ChunkGroup, ChunkGroupByUkey, ChunkKind, ModuleIdentifier, ModuleIdsArtifact,
+  };
+  use rustc_hash::FxHashMap;
+
+  use super::{NaturalChunkCompareCache, assign_deterministic_ids, compare_chunks_natural};
+
+  #[test]
+  fn assign_deterministic_ids_accepts_borrowed_names() {
+    let items = vec![
+      (1usize, "module-a".to_string()),
+      (2usize, "module-b".to_string()),
+      (3usize, "module-c".to_string()),
+    ];
+    let mut assigned = FxHashMap::default();
+
+    assign_deterministic_ids(
+      items,
+      |(_, name)| name.as_str(),
+      |a, b| a.cmp(b),
+      |item, id| {
+        assigned.insert(item.0, id);
+        true
+      },
+      &[1000],
+      10,
+      0,
+      0,
+    );
+
+    assert_eq!(assigned.len(), 3);
+  }
+
+  #[test]
+  fn compare_chunks_natural_orders_by_modules_then_groups() {
+    let mut chunk_graph = ChunkGraph::default();
+    let mut module_ids = ModuleIdsArtifact::default();
+    let mut chunk_group_by_ukey = ChunkGroupByUkey::default();
+    let mut cache = NaturalChunkCompareCache::default();
+
+    let chunk_a = Chunk::new(None, ChunkKind::Normal);
+    let chunk_b = Chunk::new(None, ChunkKind::Normal);
+    let module_a: ModuleIdentifier = "module-a".into();
+    let module_b: ModuleIdentifier = "module-b".into();
+
+    chunk_graph.connect_chunk_and_module(chunk_a.ukey(), module_a);
+    chunk_graph.connect_chunk_and_module(chunk_b.ukey(), module_b);
+    ChunkGraph::set_module_id(&mut module_ids, module_a, "a".into());
+    ChunkGraph::set_module_id(&mut module_ids, module_b, "b".into());
+
+    assert_eq!(
+      compare_chunks_natural(
+        &chunk_graph,
+        &chunk_group_by_ukey,
+        &module_ids,
+        &chunk_a,
+        &chunk_b,
+        &mut cache,
+      ),
+      Ordering::Less
+    );
+
+    let mut chunk_c = Chunk::new(None, ChunkKind::Normal);
+    let mut chunk_d = Chunk::new(None, ChunkKind::Normal);
+    let shared_module: ModuleIdentifier = "shared-module".into();
+    ChunkGraph::set_module_id(&mut module_ids, shared_module, "shared".into());
+    chunk_graph.connect_chunk_and_module(chunk_c.ukey(), shared_module);
+    chunk_graph.connect_chunk_and_module(chunk_d.ukey(), shared_module);
+
+    let mut group = ChunkGroup::default();
+    group.index = Some(1);
+    group.chunks = vec![chunk_c.ukey(), chunk_d.ukey()];
+    chunk_c.add_group(group.ukey());
+    chunk_d.add_group(group.ukey());
+    chunk_group_by_ukey.add(group);
+
+    let mut cache = NaturalChunkCompareCache::default();
+    assert_eq!(
+      compare_chunks_natural(
+        &chunk_graph,
+        &chunk_group_by_ukey,
+        &module_ids,
+        &chunk_c,
+        &chunk_d,
+        &mut cache,
+      ),
+      Ordering::Less
+    );
+  }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn get_short_chunk_name(
   chunk: &Chunk,
@@ -211,6 +348,7 @@ pub fn get_short_chunk_name(
   delimiter: &str,
   module_graph: &ModuleGraph,
   module_graph_cache: &ModuleGraphCacheArtifact,
+  side_effects_state_artifact: &SideEffectsStateArtifact,
   named_chunk_ids_artifact: &ChunkNamedIdArtifact,
   exports_info_artifact: &ExportsInfoArtifact,
 ) -> String {
@@ -226,6 +364,7 @@ pub fn get_short_chunk_name(
       &chunk.ukey(),
       module_graph,
       module_graph_cache,
+      side_effects_state_artifact,
       exports_info_artifact,
     )
     .iter()
@@ -276,6 +415,7 @@ pub fn get_long_chunk_name(
   delimiter: &str,
   module_graph: &ModuleGraph,
   module_graph_cache: &ModuleGraphCacheArtifact,
+  side_effects_state_artifact: &SideEffectsStateArtifact,
   named_chunk_ids_artifact: &ChunkNamedIdArtifact,
   exports_info_artifact: &ExportsInfoArtifact,
 ) -> String {
@@ -288,6 +428,7 @@ pub fn get_long_chunk_name(
       &chunk.ukey(),
       module_graph,
       module_graph_cache,
+      side_effects_state_artifact,
       exports_info_artifact,
     )
     .iter()
@@ -324,6 +465,7 @@ pub fn get_full_chunk_name(
   chunk_graph: &ChunkGraph,
   module_graph: &ModuleGraph,
   module_graph_cache: &ModuleGraphCacheArtifact,
+  side_effects_state_artifact: &SideEffectsStateArtifact,
   context: &str,
   exports_info_artifact: &ExportsInfoArtifact,
 ) -> String {
@@ -336,6 +478,7 @@ pub fn get_full_chunk_name(
       &chunk.ukey(),
       module_graph,
       module_graph_cache,
+      side_effects_state_artifact,
       exports_info_artifact,
     )
     .iter()
@@ -384,16 +527,23 @@ pub fn assign_ascending_chunk_ids(chunks: &[ChunkUkey], chunk_by_ukey: &mut Chun
   }
 }
 
+#[derive(Default)]
+pub struct NaturalChunkCompareCache<'a> {
+  ordered_chunk_modules: FxHashMap<ChunkUkey, Vec<Option<&'a str>>>,
+  sorted_chunk_groups: FxHashMap<ChunkUkey, Vec<ChunkGroupUkey>>,
+}
+
 fn compare_chunks_by_modules<'a>(
   chunk_graph: &ChunkGraph,
   module_ids: &'a ModuleIdsArtifact,
   a: &Chunk,
   b: &Chunk,
-  ordered_chunk_modules_cache: &mut FxHashMap<ChunkUkey, Vec<Option<&'a str>>>,
+  cache: &mut NaturalChunkCompareCache<'a>,
 ) -> Ordering {
   let a_ukey = a.ukey();
   let b_ukey = b.ukey();
-  let a_modules = ordered_chunk_modules_cache
+  cache
+    .ordered_chunk_modules
     .entry(a_ukey)
     .or_insert_with(|| {
       chunk_graph
@@ -401,9 +551,9 @@ fn compare_chunks_by_modules<'a>(
         .into_iter()
         .map(|m| ChunkGraph::get_module_id(module_ids, m).map(|s| s.as_str()))
         .collect_vec()
-    })
-    .clone();
-  let b_modules = ordered_chunk_modules_cache
+    });
+  cache
+    .ordered_chunk_modules
     .entry(b_ukey)
     .or_insert_with(|| {
       chunk_graph
@@ -411,12 +561,20 @@ fn compare_chunks_by_modules<'a>(
         .into_iter()
         .map(|m| ChunkGraph::get_module_id(module_ids, m).map(|s| s.as_str()))
         .collect_vec()
-    })
-    .clone();
+    });
+
+  let a_modules = cache
+    .ordered_chunk_modules
+    .get(&a_ukey)
+    .expect("should cache ordered chunk modules");
+  let b_modules = cache
+    .ordered_chunk_modules
+    .get(&b_ukey)
+    .expect("should cache ordered chunk modules");
 
   a_modules
-    .into_iter()
-    .zip_longest(b_modules)
+    .iter()
+    .zip_longest(b_modules.iter())
     .find_map(|pair| match pair {
       Both(a_module_id, b_module_id) => {
         let ordering = compare_ids(
@@ -438,20 +596,51 @@ fn compare_chunks_by_groups(
   chunk_group_by_ukey: &ChunkGroupByUkey,
   a: &Chunk,
   b: &Chunk,
+  cache: &mut NaturalChunkCompareCache<'_>,
 ) -> Ordering {
-  let a_groups: Vec<_> = a
-    .get_sorted_groups_iter(chunk_group_by_ukey)
-    .map(|group| chunk_group_by_ukey.expect_get(group))
-    .collect();
-  let a_groups_index = a_groups.iter().map(|group| group.index).collect_vec();
+  let a_ukey = a.ukey();
+  let b_ukey = b.ukey();
+  cache.sorted_chunk_groups.entry(a_ukey).or_insert_with(|| {
+    a.get_sorted_groups_iter(chunk_group_by_ukey)
+      .copied()
+      .collect_vec()
+  });
+  cache.sorted_chunk_groups.entry(b_ukey).or_insert_with(|| {
+    b.get_sorted_groups_iter(chunk_group_by_ukey)
+      .copied()
+      .collect_vec()
+  });
 
-  let b_groups: Vec<_> = b
-    .get_sorted_groups_iter(chunk_group_by_ukey)
-    .map(|group| chunk_group_by_ukey.expect_get(group))
-    .collect();
-  let b_groups_index = b_groups.iter().map(|group| group.index).collect_vec();
+  let a_groups = cache
+    .sorted_chunk_groups
+    .get(&a_ukey)
+    .expect("should cache sorted chunk groups");
+  let b_groups = cache
+    .sorted_chunk_groups
+    .get(&b_ukey)
+    .expect("should cache sorted chunk groups");
 
-  let groups_ordering = a_groups_index.cmp(&b_groups_index);
+  let groups_ordering = a_groups
+    .iter()
+    .map(|group| chunk_group_by_ukey.expect_get(group).index)
+    .zip_longest(
+      b_groups
+        .iter()
+        .map(|group| chunk_group_by_ukey.expect_get(group).index),
+    )
+    .find_map(|pair| match pair {
+      Both(a_group_index, b_group_index) => {
+        let ordering = a_group_index.cmp(&b_group_index);
+        if ordering != Ordering::Equal {
+          Some(ordering)
+        } else {
+          None
+        }
+      }
+      Left(_) => Some(Ordering::Greater),
+      Right(_) => Some(Ordering::Less),
+    })
+    .unwrap_or(Ordering::Equal);
 
   if groups_ordering != Ordering::Equal {
     return groups_ordering;
@@ -460,6 +649,7 @@ fn compare_chunks_by_groups(
   let Some(group) = a_groups.first() else {
     return Ordering::Equal;
   };
+  let group = chunk_group_by_ukey.expect_get(group);
 
   let a_in_children = group
     .chunks
@@ -479,7 +669,7 @@ pub fn compare_chunks_natural<'a>(
   module_ids: &'a ModuleIdsArtifact,
   a: &Chunk,
   b: &Chunk,
-  ordered_chunk_modules_cache: &mut FxHashMap<ChunkUkey, Vec<Option<&'a str>>>,
+  cache: &mut NaturalChunkCompareCache<'a>,
 ) -> Ordering {
   let name_ordering = compare_ids(a.name().unwrap_or_default(), b.name().unwrap_or_default());
   if name_ordering != Ordering::Equal {
@@ -491,11 +681,10 @@ pub fn compare_chunks_natural<'a>(
     return runtime_ordering;
   }
 
-  let modules_ordering =
-    compare_chunks_by_modules(chunk_graph, module_ids, a, b, ordered_chunk_modules_cache);
+  let modules_ordering = compare_chunks_by_modules(chunk_graph, module_ids, a, b, cache);
   if modules_ordering != Ordering::Equal {
     return modules_ordering;
   }
 
-  compare_chunks_by_groups(chunk_group_by_ukey, a, b)
+  compare_chunks_by_groups(chunk_group_by_ukey, a, b, cache)
 }

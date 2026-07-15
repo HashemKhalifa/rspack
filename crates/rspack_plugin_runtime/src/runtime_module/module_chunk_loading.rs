@@ -1,20 +1,20 @@
-use std::{ptr::NonNull, sync::LazyLock};
+use std::sync::LazyLock;
 
-use rspack_collections::DatabaseItem;
 use rspack_core::{
   BooleanMatcher, Chunk, ChunkGroupOrderKey, Compilation, RuntimeCodeTemplate, RuntimeGlobals,
-  RuntimeModule, RuntimeModuleGenerateContext, RuntimeModuleStage, RuntimeTemplate,
-  RuntimeVariable, compile_boolean_matcher, impl_runtime_module,
+  RuntimeModule, RuntimeModuleGenerateContext, RuntimeModuleRuntimeRequirements,
+  RuntimeModuleStage, RuntimeTemplate, RuntimeVariable, compile_boolean_matcher,
+  impl_runtime_module,
 };
 use rspack_plugin_javascript::impl_plugin_for_js_plugin::chunk_has_js;
 
 use super::utils::get_output_dir;
 use crate::{
-  LinkPrefetchData, LinkPreloadData, RuntimeModuleChunkWrapper, RuntimePlugin,
-  extract_runtime_globals_from_ejs, get_chunk_runtime_requirements,
+  LinkPrefetchData, LinkPreloadData, RuntimePlugin, extract_runtime_globals_from_ejs,
+  get_chunk_runtime_requirements,
   runtime_module::{
     generate_javascript_hmr_runtime,
-    utils::{get_initial_chunk_ids, stringify_chunks},
+    utils::{get_initial_chunk_ids, render_hmr_runtime_state_expression, stringify_chunks},
   },
 };
 
@@ -36,65 +36,69 @@ static MODULE_CHUNK_LOADING_WITH_HMR_MANIFEST_TEMPLATE: &str =
 static JAVASCRIPT_HOT_MODULE_REPLACEMENT_TEMPLATE: &str =
   include_str!("runtime/javascript_hot_module_replacement.ejs");
 
-static MODULE_CHUNK_LOADING_BASIC_RUNTIME_REQUIREMENTS: LazyLock<RuntimeGlobals> =
-  LazyLock::new(|| {
-    let mut res = extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_TEMPLATE);
-    res.remove(RuntimeGlobals::ON_CHUNKS_LOADED);
-    res
-  });
-static MODULE_CHUNK_LOADING_WITH_LOADING_RUNTIME_REQUIREMENTS: LazyLock<RuntimeGlobals> =
-  LazyLock::new(|| extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_LOADING_TEMPLATE));
-static MODULE_CHUNK_LOADING_WITH_PREFETCH_RUNTIME_REQUIREMENTS: LazyLock<RuntimeGlobals> =
-  LazyLock::new(|| {
-    extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_PREFETCH_TEMPLATE)
-      | extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_PREFETCH_LINK_TEMPLATE)
-  });
-static MODULE_CHUNK_LOADING_WITH_PRELOAD_RUNTIME_REQUIREMENTS: LazyLock<RuntimeGlobals> =
-  LazyLock::new(|| {
-    extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_PRELOAD_TEMPLATE)
-      | extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_PRELOAD_LINK_TEMPLATE)
-  });
-static MODULE_CHUNK_LOADING_WITH_HMR_RUNTIME_REQUIREMENTS: LazyLock<RuntimeGlobals> =
-  LazyLock::new(|| extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_HMR_TEMPLATE));
-static MODULE_CHUNK_LOADING_WITH_HMR_MANIFEST_RUNTIME_REQUIREMENTS: LazyLock<RuntimeGlobals> =
-  LazyLock::new(|| {
-    extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_HMR_MANIFEST_TEMPLATE)
-  });
-static JAVASCRIPT_HOT_MODULE_REPLACEMENT_RUNTIME_REQUIREMENTS: LazyLock<RuntimeGlobals> =
-  LazyLock::new(|| {
-    let mut res = extract_runtime_globals_from_ejs(JAVASCRIPT_HOT_MODULE_REPLACEMENT_TEMPLATE);
-    // ensure chunk handlers is optional
-    res.remove(RuntimeGlobals::ENSURE_CHUNK_HANDLERS);
-    res
-  });
+static MODULE_CHUNK_LOADING_BASIC_RUNTIME_REQUIREMENTS: LazyLock<RuntimeModuleRuntimeRequirements> =
+  LazyLock::new(|| extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_TEMPLATE));
+static MODULE_CHUNK_LOADING_WITH_LOADING_RUNTIME_REQUIREMENTS: LazyLock<
+  RuntimeModuleRuntimeRequirements,
+> = LazyLock::new(|| extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_LOADING_TEMPLATE));
+static MODULE_CHUNK_LOADING_WITH_PREFETCH_RUNTIME_REQUIREMENTS: LazyLock<
+  RuntimeModuleRuntimeRequirements,
+> = LazyLock::new(|| {
+  extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_PREFETCH_TEMPLATE)
+    | extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_PREFETCH_LINK_TEMPLATE)
+});
+static MODULE_CHUNK_LOADING_WITH_PRELOAD_RUNTIME_REQUIREMENTS: LazyLock<
+  RuntimeModuleRuntimeRequirements,
+> = LazyLock::new(|| {
+  extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_PRELOAD_TEMPLATE)
+    | extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_PRELOAD_LINK_TEMPLATE)
+});
+static MODULE_CHUNK_LOADING_WITH_HMR_RUNTIME_REQUIREMENTS: LazyLock<
+  RuntimeModuleRuntimeRequirements,
+> = LazyLock::new(|| extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_HMR_TEMPLATE));
+static MODULE_CHUNK_LOADING_WITH_HMR_MANIFEST_RUNTIME_REQUIREMENTS: LazyLock<
+  RuntimeModuleRuntimeRequirements,
+> = LazyLock::new(|| {
+  extract_runtime_globals_from_ejs(MODULE_CHUNK_LOADING_WITH_HMR_MANIFEST_TEMPLATE)
+});
+static JAVASCRIPT_HOT_MODULE_REPLACEMENT_RUNTIME_REQUIREMENTS: LazyLock<
+  RuntimeModuleRuntimeRequirements,
+> = LazyLock::new(|| extract_runtime_globals_from_ejs(JAVASCRIPT_HOT_MODULE_REPLACEMENT_TEMPLATE));
 
 #[impl_runtime_module]
 #[derive(Debug)]
-pub struct ModuleChunkLoadingRuntimeModule {}
+pub struct ModuleChunkLoadingRuntimeModule {
+  omit_on_demand_loading: bool,
+}
 
 impl ModuleChunkLoadingRuntimeModule {
   pub fn new(runtime_template: &RuntimeTemplate) -> Self {
-    Self::with_default(runtime_template)
+    Self::with_default(runtime_template, false)
+  }
+
+  pub fn without_on_demand_loading(runtime_template: &RuntimeTemplate) -> Self {
+    Self::with_default(runtime_template, true)
   }
 
   pub fn get_runtime_requirements_basic() -> RuntimeGlobals {
-    *MODULE_CHUNK_LOADING_BASIC_RUNTIME_REQUIREMENTS
+    MODULE_CHUNK_LOADING_BASIC_RUNTIME_REQUIREMENTS.dependencies
   }
   pub fn get_runtime_requirements_with_loading() -> RuntimeGlobals {
-    *MODULE_CHUNK_LOADING_WITH_LOADING_RUNTIME_REQUIREMENTS
+    MODULE_CHUNK_LOADING_WITH_LOADING_RUNTIME_REQUIREMENTS.dependencies
   }
   pub fn get_runtime_requirements_with_prefetch() -> RuntimeGlobals {
-    *MODULE_CHUNK_LOADING_WITH_PREFETCH_RUNTIME_REQUIREMENTS
+    MODULE_CHUNK_LOADING_WITH_PREFETCH_RUNTIME_REQUIREMENTS.dependencies
   }
   pub fn get_runtime_requirements_with_preload() -> RuntimeGlobals {
-    *MODULE_CHUNK_LOADING_WITH_PRELOAD_RUNTIME_REQUIREMENTS
+    MODULE_CHUNK_LOADING_WITH_PRELOAD_RUNTIME_REQUIREMENTS.dependencies
   }
   pub fn get_runtime_requirements_with_hmr() -> RuntimeGlobals {
-    *MODULE_CHUNK_LOADING_WITH_HMR_RUNTIME_REQUIREMENTS
-      | *JAVASCRIPT_HOT_MODULE_REPLACEMENT_RUNTIME_REQUIREMENTS
+    MODULE_CHUNK_LOADING_WITH_HMR_RUNTIME_REQUIREMENTS.dependencies
+      | JAVASCRIPT_HOT_MODULE_REPLACEMENT_RUNTIME_REQUIREMENTS.dependencies
+      | RuntimeGlobals::HMR_RUNTIME_STATE_PREFIX
   }
   pub fn get_runtime_requirements_with_hmr_manifest() -> RuntimeGlobals {
-    *MODULE_CHUNK_LOADING_WITH_HMR_MANIFEST_RUNTIME_REQUIREMENTS
+    MODULE_CHUNK_LOADING_WITH_HMR_MANIFEST_RUNTIME_REQUIREMENTS.dependencies
   }
 }
 
@@ -104,7 +108,7 @@ impl ModuleChunkLoadingRuntimeModule {
     chunk: &Chunk,
     compilation: &Compilation,
     root_output_dir: &str,
-    runtime_template: &RuntimeCodeTemplate<'_>,
+    runtime_template: &RuntimeCodeTemplate,
   ) -> String {
     let base_uri = chunk
       .get_entry_options(&compilation.build_chunk_graph_artifact.chunk_group_by_ukey)
@@ -128,15 +132,15 @@ impl ModuleChunkLoadingRuntimeModule {
 
   fn template(&self, template_id: TemplateId) -> String {
     match template_id {
-      TemplateId::Raw => self.id.to_string(),
-      TemplateId::WithLoading => format!("{}_with_loading", self.id),
-      TemplateId::WithPrefetch => format!("{}_with_prefetch", self.id),
-      TemplateId::WithPrefetchLink => format!("{}_with_prefetch_link", self.id),
-      TemplateId::WithPreload => format!("{}_with_preload", self.id),
-      TemplateId::WithPreloadLink => format!("{}_with_preload_link", self.id),
-      TemplateId::WithHMR => format!("{}_with_hmr", self.id),
-      TemplateId::WithHMRManifest => format!("{}_with_hmr_manifest", self.id),
-      TemplateId::HmrRuntime => format!("{}_hmr_runtime", self.id),
+      TemplateId::Raw => self.id().to_string(),
+      TemplateId::WithLoading => format!("{}_with_loading", self.id()),
+      TemplateId::WithPrefetch => format!("{}_with_prefetch", self.id()),
+      TemplateId::WithPrefetchLink => format!("{}_with_prefetch_link", self.id()),
+      TemplateId::WithPreload => format!("{}_with_preload", self.id()),
+      TemplateId::WithPreloadLink => format!("{}_with_preload_link", self.id()),
+      TemplateId::WithHMR => format!("{}_with_hmr", self.id()),
+      TemplateId::WithHMRManifest => format!("{}_with_hmr_manifest", self.id()),
+      TemplateId::HmrRuntime => format!("{}_hmr_runtime", self.id()),
     }
   }
 }
@@ -155,6 +159,50 @@ enum TemplateId {
 
 #[async_trait::async_trait]
 impl RuntimeModule for ModuleChunkLoadingRuntimeModule {
+  fn runtime_requirements(&self, compilation: &Compilation) -> RuntimeModuleRuntimeRequirements {
+    let Some(chunk_ukey) = self.chunk() else {
+      return RuntimeModuleRuntimeRequirements::default();
+    };
+    let runtime_requirements = get_chunk_runtime_requirements(compilation, &chunk_ukey);
+    let mut dependencies = Self::get_runtime_requirements_basic();
+    let mut weak = RuntimeGlobals::default();
+    let mut define = RuntimeGlobals::default();
+    let mut force_context = RuntimeGlobals::default();
+    if runtime_requirements.contains(RuntimeGlobals::BASE_URI) {
+      force_context.insert(RuntimeGlobals::BASE_URI);
+    }
+    if runtime_requirements.contains(RuntimeGlobals::ENSURE_CHUNK_HANDLERS) {
+      dependencies.insert(Self::get_runtime_requirements_with_loading());
+    }
+    if runtime_requirements.contains(RuntimeGlobals::EXTERNAL_INSTALL_CHUNK) {
+      define.insert(RuntimeGlobals::EXTERNAL_INSTALL_CHUNK);
+    }
+    if runtime_requirements.contains(RuntimeGlobals::HMR_DOWNLOAD_UPDATE_HANDLERS) {
+      dependencies.insert(Self::get_runtime_requirements_with_hmr() | RuntimeGlobals::MODULE_CACHE);
+      weak.insert(JAVASCRIPT_HOT_MODULE_REPLACEMENT_RUNTIME_REQUIREMENTS.weak);
+    }
+    if runtime_requirements.contains(RuntimeGlobals::HMR_DOWNLOAD_MANIFEST) {
+      dependencies.insert(Self::get_runtime_requirements_with_hmr_manifest());
+      define.insert(RuntimeGlobals::HMR_DOWNLOAD_MANIFEST);
+    }
+    if runtime_requirements.contains(RuntimeGlobals::PREFETCH_CHUNK_HANDLERS) {
+      let requirements = *MODULE_CHUNK_LOADING_WITH_PREFETCH_RUNTIME_REQUIREMENTS;
+      dependencies.insert(requirements.dependencies);
+      weak.insert(requirements.weak);
+    }
+    if runtime_requirements.contains(RuntimeGlobals::PRELOAD_CHUNK_HANDLERS) {
+      let requirements = *MODULE_CHUNK_LOADING_WITH_PRELOAD_RUNTIME_REQUIREMENTS;
+      dependencies.insert(requirements.dependencies);
+      weak.insert(requirements.weak);
+    }
+    RuntimeModuleRuntimeRequirements {
+      dependencies,
+      weak,
+      define,
+      force_context,
+    }
+  }
+
   fn template(&self) -> Vec<(String, String)> {
     vec![
       (
@@ -205,7 +253,7 @@ impl RuntimeModule for ModuleChunkLoadingRuntimeModule {
     let chunk = compilation
       .build_chunk_graph_artifact
       .chunk_by_ukey
-      .expect_get(&self.chunk.expect("The chunk should be attached."));
+      .expect_get(&self.chunk().expect("The chunk should be attached."));
     let runtime_requirements = get_chunk_runtime_requirements(compilation, &chunk.ukey());
 
     let hooks = RuntimePlugin::get_compilation_hooks(compilation.id());
@@ -213,7 +261,8 @@ impl RuntimeModule for ModuleChunkLoadingRuntimeModule {
     let with_base_uri = runtime_requirements.contains(RuntimeGlobals::BASE_URI);
     let with_external_install_chunk =
       runtime_requirements.contains(RuntimeGlobals::EXTERNAL_INSTALL_CHUNK);
-    let with_loading = runtime_requirements.contains(RuntimeGlobals::ENSURE_CHUNK_HANDLERS);
+    let with_loading = runtime_requirements.contains(RuntimeGlobals::ENSURE_CHUNK_HANDLERS)
+      && !self.omit_on_demand_loading;
     let with_on_chunk_load = runtime_requirements.contains(RuntimeGlobals::ON_CHUNKS_LOADED);
     let with_hmr = runtime_requirements.contains(RuntimeGlobals::HMR_DOWNLOAD_UPDATE_HANDLERS);
     let with_hmr_manifest = runtime_requirements.contains(RuntimeGlobals::HMR_DOWNLOAD_MANIFEST);
@@ -242,7 +291,7 @@ impl RuntimeModule for ModuleChunkLoadingRuntimeModule {
       .chunk_graph
       .get_chunk_condition_map(&chunk.ukey(), compilation, chunk_has_js);
     let has_js_matcher = compile_boolean_matcher(&condition_map);
-    let initial_chunks = get_initial_chunk_ids(self.chunk, compilation, chunk_has_js);
+    let initial_chunks = get_initial_chunk_ids(self.chunk(), compilation, chunk_has_js);
 
     let root_output_dir = get_output_dir(chunk, compilation, true).await?;
     let import_function_name = &compilation.options.output.import_function_name;
@@ -265,14 +314,11 @@ impl RuntimeModule for ModuleChunkLoadingRuntimeModule {
       // object to store loaded and loading chunks
       // undefined = chunk not loaded, null = chunk preloaded/prefetched
       // [resolve, Promise] = chunk loading, 0 = chunk loaded
-      var installedChunks = {}{};
+      var moduleInstalledChunks = {}{};
       "#,
       match with_hmr {
         true => {
-          let state_expression = format!(
-            "{}_module",
-            runtime_template.render_runtime_globals(&RuntimeGlobals::HMR_RUNTIME_STATE_PREFIX)
-          );
+          let state_expression = render_hmr_runtime_state_expression(runtime_template, "module");
           format!("{state_expression} = {state_expression} || ")
         }
         false => String::new(),
@@ -296,7 +342,7 @@ impl RuntimeModule for ModuleChunkLoadingRuntimeModule {
 
     if with_loading {
       let body = if matches!(has_js_matcher, BooleanMatcher::Condition(false)) {
-        "installedChunks[chunkId] = 0;".to_string()
+        "moduleInstalledChunks[chunkId] = 0;".to_string()
       } else {
         runtime_template.render(
           &self.template(TemplateId::WithLoading),
@@ -307,7 +353,7 @@ impl RuntimeModule for ModuleChunkLoadingRuntimeModule {
             "_match_fallback":    if matches!(has_js_matcher, BooleanMatcher::Condition(true)) {
               ""
             } else {
-              "else installedChunks[chunkId] = 0;\n"
+              "else moduleInstalledChunks[chunkId] = 0;\n"
             },
           })),
         )?
@@ -336,18 +382,16 @@ impl RuntimeModule for ModuleChunkLoadingRuntimeModule {
           })),
         )?;
 
-        let chunk_ukey = self.chunk.expect("The chunk should be attached");
         let res = hooks
           .borrow()
           .link_prefetch
-          .call(LinkPrefetchData {
-            code: link_prefetch_code,
-            chunk: RuntimeModuleChunkWrapper {
-              chunk_ukey,
-              compilation_id: compilation.id(),
-              compilation: NonNull::from(compilation),
+          .call(
+            compilation,
+            LinkPrefetchData {
+              code: link_prefetch_code,
+              chunk,
             },
-          })
+          )
           .await?;
 
         let raw_source = runtime_template.render(
@@ -369,18 +413,16 @@ impl RuntimeModule for ModuleChunkLoadingRuntimeModule {
           })),
         )?;
 
-        let chunk_ukey = self.chunk.expect("The chunk should be attached");
         let res = hooks
           .borrow()
           .link_preload
-          .call(LinkPreloadData {
-            code: link_preload_code,
-            chunk: RuntimeModuleChunkWrapper {
-              chunk_ukey,
-              compilation_id: compilation.id(),
-              compilation: NonNull::from(compilation),
+          .call(
+            compilation,
+            LinkPreloadData {
+              code: link_preload_code,
+              chunk,
             },
-          })
+          )
           .await?;
 
         let raw_source = runtime_template.render(
@@ -399,9 +441,9 @@ impl RuntimeModule for ModuleChunkLoadingRuntimeModule {
     if with_external_install_chunk {
       source.push_str(&format!(
         r#"
-        {} = installChunk;
+        {} = moduleInstallChunk;
         "#,
-        runtime_template.render_runtime_globals(&RuntimeGlobals::EXTERNAL_INSTALL_CHUNK)
+        runtime_template.render_runtime_global_definition(&RuntimeGlobals::EXTERNAL_INSTALL_CHUNK)
       ));
     } else {
       source.push_str("// no external install chunk\n");
@@ -411,7 +453,7 @@ impl RuntimeModule for ModuleChunkLoadingRuntimeModule {
       source.push_str(&format!(
         r#"
         {}.j = function(chunkId) {{
-            return installedChunks[chunkId] === 0;
+            return moduleInstalledChunks[chunkId] === 0;
         }}
         "#,
         runtime_template.render_runtime_globals(&RuntimeGlobals::ON_CHUNKS_LOADED)

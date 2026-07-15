@@ -1,3 +1,7 @@
+---
+description: 'Rspack API 总览，涵盖 CLI、JavaScript API、Loader API、Plugin API 与运行时能力等核心内容。'
+---
+
 # Rspack APIs
 
 Rspack 提供了丰富的 API 和命令行工具（CLI）来自定义构建过程。
@@ -8,7 +12,7 @@ Rspack 提供了丰富的 API 和命令行工具（CLI）来自定义构建过�
 
 ## 命令行工具
 
-命令行工具（CLI）用于配置和交互操作你的构建流程。大多数情况下，CLI 是用来通过 [配置文件](/config/index) 和一些选项（例如 `--env`）来启动进程的。
+命令行工具（CLI）用于配置和交互操作你的构建流程。大多数情况下，CLI 是用来通过 [配置文件](/config/) 和一些选项（例如 `--env`）来启动进程的。
 
 [了解更多关于 CLI 的信息 →](/api/cli)
 
@@ -22,16 +26,16 @@ Rspack 提供了丰富的 API 和命令行工具（CLI）来自定义构建过�
 
 虽然大多数用户可以通过命令行工具（CLI）和配置文件来进行操作，但通过 JavaScript API 可以实现对编译过程更为细致的控制。这包括传递多个配置、以编程方式运行或监控，以及收集统计信息。
 
-[了解更多关于 JavaScript API 的信息 →](/api/javascript-api/index)
+[了解更多关于 JavaScript API 的信息 →](/api/javascript-api/)
 
 ## Loader API
 
 Loader 用于模块源代码的转换。它们被编写为函数，接收源代码作为参数，并返回转换后的代码。
 
-[了解更多关于 Loader 的信息 →](/api/loader-api/index)
+[了解更多关于 Loader 的信息 →](/api/loader-api/)
 
 ## 插件 API
 
 插件允许用户直接介入编译过程。插件可以在生命周期钩子上注册处理程序，这些钩子在编译过程的不同节点处运行。当钩子被执行时，插件将能完全访问当前编译的状态。
 
-[了解更多关于插件的信息 →](/api/plugin-api/index)
+[了解更多关于插件的信息 →](/api/plugin-api/)

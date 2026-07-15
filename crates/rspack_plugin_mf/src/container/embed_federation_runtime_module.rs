@@ -6,8 +6,8 @@
 
 use rspack_cacheable::cacheable;
 use rspack_core::{
-  DependencyId, RuntimeModule, RuntimeModuleGenerateContext, RuntimeModuleStage, RuntimeTemplate,
-  impl_runtime_module,
+  Compilation, DependencyId, RuntimeGlobals, RuntimeModule, RuntimeModuleGenerateContext,
+  RuntimeModuleStage, RuntimeTemplate, impl_runtime_module,
 };
 use rspack_error::Result;
 
@@ -42,14 +42,29 @@ enum TemplateId {
 impl EmbedFederationRuntimeModule {
   fn template_id(&self, template_id: TemplateId) -> String {
     match template_id {
-      TemplateId::Async => format!("{}_async", self.id),
-      TemplateId::Sync => format!("{}_sync", self.id),
+      TemplateId::Async => format!("{}_async", self.id()),
+      TemplateId::Sync => format!("{}_sync", self.id()),
     }
   }
 }
 
 #[async_trait::async_trait]
 impl RuntimeModule for EmbedFederationRuntimeModule {
+  fn runtime_requirements(
+    &self,
+    _compilation: &Compilation,
+  ) -> rspack_core::RuntimeModuleRuntimeRequirements {
+    let mut define = RuntimeGlobals::STARTUP;
+    if self.options.experiments.async_startup {
+      define.insert(RuntimeGlobals::STARTUP_ENTRYPOINT);
+    }
+    rspack_core::RuntimeModuleRuntimeRequirements {
+      define,
+      force_context: RuntimeGlobals::ENSURE_CHUNK_HANDLERS | RuntimeGlobals::HAS_OWN_PROPERTY,
+      ..Default::default()
+    }
+  }
+
   fn template(&self) -> Vec<(String, String)> {
     vec![
       (
@@ -66,7 +81,7 @@ impl RuntimeModule for EmbedFederationRuntimeModule {
   async fn generate(&self, context: &RuntimeModuleGenerateContext<'_>) -> Result<String> {
     let compilation = context.compilation;
     let chunk_ukey = self
-      .chunk
+      .chunk()
       .expect("Chunk should be attached to RuntimeModule");
 
     let collected_deps = &self.options.collected_dependency_ids;
@@ -112,11 +127,11 @@ impl RuntimeModule for EmbedFederationRuntimeModule {
             .chunk_by_ukey
             .expect_get(&chunk_ukey)
             .expect_id()
-            .to_string()
+            .clone()
         })
         .collect::<Vec<_>>();
       let entry_chunk_ids_literal =
-        serde_json::to_string(&entry_chunk_ids).expect("Invalid json to string");
+        simd_json::to_string(&entry_chunk_ids).expect("Invalid json to string");
       Ok(context.runtime_template.render(
         &self.template_id(TemplateId::Async),
         Some(serde_json::json!({

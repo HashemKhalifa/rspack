@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { pluginSass } from '@rsbuild/plugin-sass';
+import { pluginTailwindcss } from '@rsbuild/plugin-tailwindcss';
 import { defineConfig } from '@rspress/core';
 import { pluginAlgolia } from '@rspress/plugin-algolia';
 import { pluginClientRedirects } from '@rspress/plugin-client-redirects';
@@ -14,12 +15,13 @@ import { pluginOpenGraph } from 'rsbuild-plugin-open-graph';
 import { pluginFontOpenSans } from 'rspress-plugin-font-open-sans';
 
 const PUBLISH_URL = 'https://rspack.rs';
+const description =
+  'Fast Rust-based bundler for the web with a modernized webpack API';
 
 export default defineConfig({
   root: path.join(__dirname, 'docs'),
   title: 'Rspack',
-  description:
-    'Rspack is a high performance JavaScript bundler written in Rust. It offers strong compatibility with the webpack ecosystem, and lightning fast build speeds.',
+  description,
   logo: {
     light: 'https://assets.rspack.rs/rspack/navbar-logo-light.png',
     dark: 'https://assets.rspack.rs/rspack/navbar-logo-dark.png',
@@ -28,6 +30,9 @@ export default defineConfig({
   lang: 'en',
   globalStyles: path.join(__dirname, 'theme', 'index.css'),
   markdown: {
+    link: {
+      checkAnchors: true,
+    },
     shiki: {
       transformers: [transformerNotationHighlight(), transformerNotationDiff()],
       langAlias: {
@@ -120,8 +125,7 @@ export default defineConfig({
       {
         lang: 'en',
         title: 'Rspack',
-        description:
-          'Fast Rust-based bundler for the web with a modernized webpack API',
+        description,
         label: 'English',
       },
       {
@@ -152,11 +156,11 @@ export default defineConfig({
   builderConfig: {
     plugins: [
       pluginSass(),
+      pluginTailwindcss(),
       pluginGoogleAnalytics({ id: 'G-XKKCNZZNJD' }),
       pluginOpenGraph({
         url: PUBLISH_URL,
-        description:
-          'Fast Rust-based bundler for the web with a modernized webpack API',
+        description,
         twitter: {
           site: '@rspack_dev',
           card: 'summary_large_image',

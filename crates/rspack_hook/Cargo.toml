@@ -11,8 +11,11 @@ version.workspace = true
 async-trait   = { workspace = true }
 rspack_error  = { workspace = true }
 rspack_macros = { workspace = true }
-rustc-hash    = { workspace = true }
 tracing       = { workspace = true }
 
 [lints]
 workspace = true
+
+[lib]
+doctest = false
+test    = false

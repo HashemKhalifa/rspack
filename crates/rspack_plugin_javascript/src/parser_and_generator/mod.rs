@@ -1,59 +1,80 @@
 use std::{
   borrow::Cow,
+  collections::HashSet,
   sync::{Arc, LazyLock},
 };
 
 use regex::Regex;
-use rspack_cacheable::{cacheable, cacheable_dyn, with::Skip};
+use rspack_cacheable::{
+  cacheable, cacheable_dyn,
+  with::{AsInner, Skip},
+};
 use rspack_core::{
-  AsyncDependenciesBlockIdentifier, BuildMetaExportsType, COLLECTED_TYPESCRIPT_INFO_PARSE_META_KEY,
-  ChunkGraph, CollectedTypeScriptInfo, Compilation, DependenciesBlock, DependencyId,
-  GenerateContext, Module, ModuleCodeTemplate, ModuleGraph, ModuleType, ParseContext, ParseResult,
-  ParserAndGenerator, RuntimeGlobals, SideEffectsBailoutItem, SourceType, TemplateContext,
-  TemplateReplaceSource,
+  ArcComputed, AsyncDependenciesBlockIdentifier, BuildMetaExportsType,
+  COLLECTED_TYPESCRIPT_INFO_PARSE_META_KEY, ChunkGraph, CollectedTypeScriptInfo, Compilation,
+  DependenciesBlock, DependencyId, GenerateContext, ImportMeta, Module, ModuleArgument,
+  ModuleCodeTemplate, ModuleGraph, ModuleType, ParseContext, ParseResult, ParserAndGenerator,
+  ResolvedModuleOptions, RuntimeGlobals, RuntimeVariable, SideEffectsBailoutItem, SourceType,
+  TemplateContext, TemplateReplaceSource,
   diagnostics::map_box_diagnostics_to_module_parse_diagnostics,
   remove_bom, render_init_fragments,
   rspack_sources::{BoxSource, ReplaceSource, Source, SourceExt},
 };
-use rspack_error::{Diagnostic, IntoTWithDiagnosticArray, Result, TWithDiagnosticArray};
-use rspack_javascript_compiler::JavaScriptCompiler;
-use swc_core::{
-  base::config::IsModule,
-  common::{BytePos, input::SourceFileInput},
-  ecma::{
-    ast,
-    parser::{EsSyntax, Syntax, lexer::Lexer},
-    transforms::base::fixer::paren_remover,
-  },
+use rspack_error::{Diagnostic, Error, IntoTWithDiagnosticArray, Result, TWithDiagnosticArray};
+use swc_experimental_allocator::Allocator;
+use swc_experimental_ecma_ast::{Comments, EsVersion, Program, VisitWith};
+use swc_experimental_ecma_parser::{
+  EsSyntax, Lexer, Parser, StringSource, Syntax, unstable::Capturing,
 };
-use swc_node_comments::SwcComments;
+use swc_experimental_ecma_semantic::resolver::resolver;
+use swc_experimental_ecma_transforms_base::remove_paren::remove_paren;
 
 use crate::{
   BoxJavascriptParserPlugin,
   dependency::ESMCompatibilityDependency,
-  visitors::{ScanDependenciesResult, scan_dependencies, semicolon, swc_visitor::resolver},
+  visitors::{ParsedJavaScriptAst, ScanDependenciesResult, scan_dependencies, semicolon},
 };
-
-fn module_type_to_is_module(value: &ModuleType) -> IsModule {
-  // parser options align with webpack
-  match value {
-    ModuleType::JsEsm => IsModule::Bool(true),
-    ModuleType::JsDynamic => IsModule::Bool(false),
-    _ => IsModule::Unknown,
-  }
-}
 
 #[derive(Debug)]
 pub struct ParserRuntimeRequirementsData {
+  pub context: String,
   pub module: String,
+  pub rspack_module: String,
   pub exports: String,
   pub require: String,
   pub require_regex: &'static LazyLock<Regex>,
+  pub module_cache: String,
+  pub entry_module_id: String,
 }
 
 static LEGACY_REQUIRE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
   Regex::new("__webpack_require__\\s*(!?\\.)").expect("should init `REQUIRE_FUNCTION_REGEX`")
 });
+
+fn append_experimental_parse_errors(
+  diagnostics: &mut Vec<Diagnostic>,
+  source: &str,
+  errors: impl IntoIterator<Item = swc_experimental_ecma_parser::error::Error>,
+) {
+  let mut visited = HashSet::new();
+  diagnostics.extend(errors.into_iter().filter_map(|err| {
+    let span = err.span();
+    let message = err.kind().msg().to_string();
+    if !visited.insert((message.clone(), span)) {
+      return None;
+    }
+    Some(
+      Error::from_string(
+        Some(source.to_string()),
+        span.start.saturating_sub(1) as usize,
+        span.end.saturating_sub(1) as usize,
+        "JavaScript parse error".to_string(),
+        message,
+      )
+      .into(),
+    )
+  }));
+}
 
 impl ParserRuntimeRequirementsData {
   pub fn new(runtime_template: &ModuleCodeTemplate) -> Self {
@@ -63,19 +84,36 @@ impl ParserRuntimeRequirementsData {
       runtime_template.render_runtime_globals_without_adding(&RuntimeGlobals::MODULE);
     let exports_name =
       runtime_template.render_runtime_globals_without_adding(&RuntimeGlobals::EXPORTS);
+    let module_cache_name =
+      runtime_template.render_runtime_globals_without_adding(&RuntimeGlobals::MODULE_CACHE);
+    let entry_module_id_name =
+      runtime_template.render_runtime_globals_without_adding(&RuntimeGlobals::ENTRY_MODULE_ID);
+    let context_name = runtime_template.render_runtime_variable(&RuntimeVariable::Context);
+    let rspack_module_name = runtime_template.render_runtime_variable(&RuntimeVariable::Module);
     Self {
       require_regex: &LEGACY_REQUIRE_REGEX,
+      context: context_name,
       module: module_name,
+      rspack_module: rspack_module_name,
       exports: exports_name,
       require: require_name,
+      module_cache: module_cache_name,
+      entry_module_id: entry_module_id_name,
+    }
+  }
+
+  pub fn module_argument(&self, module_argument: &ModuleArgument) -> String {
+    match module_argument {
+      ModuleArgument::Module => self.module.clone(),
+      ModuleArgument::RspackModule => self.rspack_module.clone(),
     }
   }
 }
 
 #[cacheable]
-#[derive(Default)]
 pub struct JavaScriptParserAndGenerator {
-  // TODO
+  #[cacheable(with=AsInner)]
+  import_meta: ArcComputed<ResolvedModuleOptions, ImportMeta>,
   #[cacheable(with=Skip)]
   parser_plugins: Vec<BoxJavascriptParserPlugin>,
 }
@@ -89,6 +127,13 @@ impl std::fmt::Debug for JavaScriptParserAndGenerator {
 }
 
 impl JavaScriptParserAndGenerator {
+  pub fn new(module_options: Arc<ResolvedModuleOptions>) -> Self {
+    Self {
+      import_meta: ArcComputed::new(module_options, |options| options.into()),
+      parser_plugins: Vec::default(),
+    }
+  }
+
   pub fn add_parser_plugin(&mut self, parser_plugin: BoxJavascriptParserPlugin) {
     self.parser_plugins.push(parser_plugin);
   }
@@ -206,15 +251,15 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
     let source = remove_bom(source);
     let source_string = source.source().into_string_lossy();
 
-    let comments = SwcComments::default();
-    let target = ast::EsVersion::EsNext;
-
     let jsx = module_parser_options
       .and_then(|options| options.get_javascript())
       .and_then(|options| options.jsx)
       .unwrap_or(false);
 
+    let allocator = Allocator::new();
+    let mut comments = Comments::new_in(&allocator);
     let parser_lexer = Lexer::new(
+      &allocator,
       Syntax::Es(EsSyntax {
         jsx,
         allow_return_outside_function: matches!(
@@ -225,47 +270,54 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
         import_attributes: true,
         ..Default::default()
       }),
-      target,
-      SourceFileInput::new(
-        &source_string,
-        BytePos(1),
-        BytePos(source_string.len() as u32 + 1),
-      ),
-      Some(&comments),
+      EsVersion::EsNext,
+      StringSource::new(source_string.as_ref()),
+      // The parser keeps this mutable borrow for the AST lifetime. We only read
+      // the comments after dropping the parser below.
+      Some(&mut comments),
     );
+    let parser_lexer = Capturing::new(parser_lexer);
+    let mut parser = Parser::new_from(&allocator, parser_lexer);
 
-    let javascript_compiler = JavaScriptCompiler::new();
-
-    let (mut ast, tokens) = match javascript_compiler.parse_with_lexer(
-      &source_string,
-      parser_lexer,
-      module_type_to_is_module(module_type),
-      Some(comments.clone()),
-      true,
-    ) {
-      Ok(ast) => ast,
+    let mut program = match match module_type {
+      ModuleType::JsEsm => parser
+        .parse_module()
+        .map(|module| Program::Module(allocator.boxed(module))),
+      ModuleType::JsDynamic => parser
+        .parse_commonjs()
+        .map(|script| Program::Script(allocator.boxed(script))),
+      _ => parser.parse_program(),
+    } {
+      Ok(program) => program,
       Err(e) => {
-        diagnostics.append(&mut e.into_inner().into_iter().map(|e| e.into()).collect());
+        let mut errors = parser.take_errors();
+        errors.push(e);
+        append_experimental_parse_errors(&mut diagnostics, &source_string, errors);
         return default_with_diagnostics(source, diagnostics);
       }
     };
 
-    let mut semicolons = Default::default();
-    ast.transform(|program, context| {
-      program.visit_mut_with(&mut paren_remover(Some(&comments)));
-      program.visit_mut_with(&mut resolver(
-        context.unresolved_mark,
-        context.top_level_mark,
-        false,
-      ));
-      program.visit_with(&mut semicolon::InsertedSemicolons {
-        semicolons: &mut semicolons,
-        // safety: it's safe to assert tokens is some since we pass with_tokens = true
-        tokens: &tokens.expect("should get tokens from parser"),
-      });
-    });
+    let parse_errors = parser.take_errors();
+    let tokens = parser.input_mut().iter.take();
+    drop(parser);
+    if !parse_errors.is_empty() {
+      append_experimental_parse_errors(&mut diagnostics, &source_string, parse_errors);
+      return default_with_diagnostics(source, diagnostics);
+    }
 
-    let unresolved_mark = ast.get_context().unresolved_mark;
+    let mut semicolons = Default::default();
+    remove_paren(&mut program, &allocator, Some(&mut comments));
+    let semantic = resolver(&program);
+    program.visit_with(&mut semicolon::InsertedSemicolons::new(
+      &mut semicolons,
+      &tokens,
+    ));
+    let parsed_ast = ParsedJavaScriptAst {
+      allocator: &allocator,
+      comments: &comments,
+      semantic: &semantic,
+      program: &program,
+    };
     let parser_runtime_requirements = ParserRuntimeRequirementsData::new(runtime_template);
 
     let ScanDependenciesResult {
@@ -274,26 +326,24 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
       presentational_dependencies,
       mut warning_diagnostics,
       mut side_effects_item,
-    } = match ast.visit(|program, _| {
-      scan_dependencies(
-        &source_string,
-        program,
-        resource_data,
-        compiler_options,
-        module_type,
-        module_layer,
-        factory_meta,
-        build_meta,
-        build_info,
-        module_identifier,
-        module_parser_options,
-        &mut semicolons,
-        unresolved_mark,
-        &mut self.parser_plugins,
-        parse_meta,
-        &parser_runtime_requirements,
-      )
-    }) {
+    } = match scan_dependencies(
+      &source_string,
+      &parsed_ast,
+      resource_data,
+      compiler_options,
+      module_type,
+      module_layer,
+      factory_meta,
+      build_meta,
+      build_info,
+      module_identifier,
+      module_parser_options,
+      ArcComputed::clone(&self.import_meta),
+      &mut semicolons,
+      &mut self.parser_plugins,
+      parse_meta,
+      &parser_runtime_requirements,
+    ) {
       Ok(result) => result,
       Err(mut e) => {
         diagnostics.append(&mut e);
@@ -304,7 +354,11 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
     let mut side_effects_bailout = None;
 
     if compiler_options.optimization.side_effects.is_true() {
-      build_meta.side_effect_free = Some(side_effects_item.is_none());
+      let has_side_effects = side_effects_item.is_some();
+      build_meta.set_side_effect_free(!has_side_effects);
+      if has_side_effects {
+        build_info.deferred_pure_checks.clear();
+      }
       side_effects_bailout = side_effects_item.take().and_then(|item| -> Option<_> {
         let msg = item.loc?.to_string();
         Some(SideEffectsBailoutItem { msg, ty: item.ty })
@@ -391,7 +445,7 @@ impl ParserAndGenerator for JavaScriptParserAndGenerator {
     _cg: &ChunkGraph,
   ) -> Option<Cow<'static, str>> {
     // Only ES modules are valid for optimization
-    if module.build_meta().exports_type != BuildMetaExportsType::Namespace {
+    if module.build_meta().exports_type() != BuildMetaExportsType::Namespace {
       return Some("Module is not an ECMAScript module".into());
     }
 

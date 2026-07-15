@@ -1,24 +1,28 @@
 /** @type {import("@rspack/core").Configuration} */
 module.exports = {
-	output: {
-		cssChunkFilename: "bundle.css"
-	},
-	target: "web",
-	node: {
-		__dirname: false,
-		__filename: false
-	},
-	module: {
-		generator: {
-			"css/auto": {
-				exportsOnly: false
-			}
-		},
-		rules: [
-			{
-				test: /\.css$/,
-				type: "css/auto"
-			}
-		]
-	}
+  externals: {
+    fs: 'node-commonjs fs',
+    path: 'node-commonjs path',
+  },
+  output: {
+    cssChunkFilename: 'bundle.css',
+  },
+  target: 'web',
+  node: {
+    __dirname: false,
+    __filename: false,
+  },
+  module: {
+    generator: {
+      'css/auto': {
+        exportsOnly: false,
+      },
+    },
+    rules: [
+      {
+        test: /\.css$/,
+        type: 'css/auto',
+      },
+    ],
+  },
 };

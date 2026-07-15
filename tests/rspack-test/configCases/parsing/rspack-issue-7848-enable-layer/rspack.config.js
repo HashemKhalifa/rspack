@@ -1,16 +1,20 @@
-const { rspack } = require("@rspack/core");
+const { rspack } = require('@rspack/core');
 
 /** @type {import("@rspack/core").Configuration} */
 module.exports = {
-	entry: {
-		bundle0: {
-			import: "./index.js",
-			layer: "main"
-		}
-	},
-	plugins: [
-		new rspack.DefinePlugin({
-			__RUNTIME_TYPE__: "__webpack_layer__"
-		})
-	]
+  externals: {
+    'node:fs': 'node-commonjs node:fs',
+    'node:path': 'node-commonjs node:path',
+  },
+  entry: {
+    bundle0: {
+      import: './index.js',
+      layer: 'main',
+    },
+  },
+  plugins: [
+    new rspack.DefinePlugin({
+      __RUNTIME_TYPE__: '__webpack_layer__',
+    }),
+  ],
 };

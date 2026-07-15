@@ -20,7 +20,9 @@ fn get_modules_needing_ids(
     .filter(|m| {
       m.need_id()
         && ChunkGraph::get_module_id(module_ids_artifact, m.identifier()).is_none()
-        && chunk_graph.get_number_of_module_chunks(m.identifier()) != 0
+        && (chunk_graph.get_number_of_module_chunks(m.identifier()) != 0
+          || m.build_meta().is_css_module()
+          || m.build_meta().need_id_in_concatenation())
     })
     .map(|m| m.identifier())
     .collect()
@@ -49,16 +51,41 @@ impl PassExt for ModuleIdsPass {
 
     let mut module_ids_artifact = compilation.module_ids_artifact.steal();
 
-    // Call beforeModuleIds hook - allows plugins to assign custom IDs
-    let modules_needing_ids = get_modules_needing_ids(compilation, &module_ids_artifact);
-    compilation
+    // Call reviveModules hook - allows plugins to restore IDs from records
+    if !compilation
       .plugin_driver
-      .clone()
+      .compilation_hooks
+      .revive_modules
+      .is_empty()
+    {
+      let modules_needing_ids = get_modules_needing_ids(compilation, &module_ids_artifact);
+      compilation
+        .plugin_driver
+        .clone()
+        .compilation_hooks
+        .revive_modules
+        .call(compilation, &modules_needing_ids, &mut module_ids_artifact)
+        .await
+        .map_err(|e| e.wrap_err("caused by plugins in Compilation.hooks.reviveModules"))?;
+    }
+
+    // Call beforeModuleIds hook - allows plugins to assign custom IDs
+    if !compilation
+      .plugin_driver
       .compilation_hooks
       .before_module_ids
-      .call(compilation, &modules_needing_ids, &mut module_ids_artifact)
-      .await
-      .map_err(|e| e.wrap_err("caused by plugins in Compilation.hooks.beforeModuleIds"))?;
+      .is_empty()
+    {
+      let modules_needing_ids = get_modules_needing_ids(compilation, &module_ids_artifact);
+      compilation
+        .plugin_driver
+        .clone()
+        .compilation_hooks
+        .before_module_ids
+        .call(compilation, &modules_needing_ids, &mut module_ids_artifact)
+        .await
+        .map_err(|e| e.wrap_err("caused by plugins in Compilation.hooks.beforeModuleIds"))?;
+    }
 
     // Put artifact back so moduleIds plugins can see custom IDs from beforeModuleIds
     // when they call get_used_module_ids_and_modules
@@ -74,6 +101,21 @@ impl PassExt for ModuleIdsPass {
       .call(compilation, &mut module_ids_artifact, &mut diagnostics)
       .await
       .map_err(|e| e.wrap_err("caused by plugins in Compilation.hooks.moduleIds"))?;
+    if !compilation
+      .plugin_driver
+      .compilation_hooks
+      .record_modules
+      .is_empty()
+    {
+      compilation
+        .plugin_driver
+        .clone()
+        .compilation_hooks
+        .record_modules
+        .call(compilation, &module_ids_artifact)
+        .await
+        .map_err(|e| e.wrap_err("caused by plugins in Compilation.hooks.recordModules"))?;
+    }
     compilation.module_ids_artifact = module_ids_artifact.into();
     compilation.extend_diagnostics(diagnostics);
     Ok(())

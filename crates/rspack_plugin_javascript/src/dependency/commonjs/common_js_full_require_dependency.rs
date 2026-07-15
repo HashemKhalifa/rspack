@@ -5,12 +5,12 @@ use rspack_cacheable::{
 use rspack_core::{
   AsContextDependency, Dependency, DependencyCategory, DependencyCodeGeneration, DependencyId,
   DependencyLocation, DependencyRange, DependencyTemplate, DependencyTemplateType, DependencyType,
-  ExportsInfoArtifact, ExportsInfoGetter, ExportsType, ExtendedReferencedExport, FactorizeInfo,
-  GetUsedNameParam, ModuleDependency, ModuleGraph, ModuleGraphCacheArtifact,
-  PrefetchExportsInfoMode, RuntimeGlobals, RuntimeSpec, TemplateContext, TemplateReplaceSource,
-  UsedName, create_exports_object_referenced, get_exports_type, property_access, to_normal_comment,
+  ExportsInfoArtifact, ExportsType, ExtendedReferencedExport, FactorizeInfo, ModuleDependency,
+  ModuleGraph, ModuleGraphCacheArtifact, RuntimeGlobals, RuntimeSpec, TemplateContext,
+  TemplateReplaceSource, UsedName, create_exports_object_referenced, property_access,
+  to_normal_comment,
 };
-use swc_core::atoms::Atom;
+use swc_atoms::Atom;
 
 #[cacheable]
 #[derive(Debug, Clone)]
@@ -86,23 +86,24 @@ impl Dependency for CommonJsFullRequireDependency {
     _runtime: Option<&RuntimeSpec>,
   ) -> Vec<ExtendedReferencedExport> {
     let mut namespace_object_as_context = self.namespace_object_as_context;
-    let parent_module = module_graph
-      .get_parent_module(&self.id)
-      .expect("should have parent module");
-    let exports_type = get_exports_type(
+
+    let module = module_graph
+      .get_module_by_dependency_id(&self.id)
+      .expect("should have module");
+    let exports_type = module.get_exports_type(
       module_graph,
       module_graph_cache,
       exports_info_artifact,
-      &self.id,
-      parent_module,
+      false,
     );
 
-    // Force enable namespace object as context for DefaultOnly and DefaultWithNamed
-    // because it's more common in cjs and json
+    // Force enable namespace object as context for json module, it's a common case:
+    // import json from "./array.json"; json.map(d => d * 2);
     if matches!(
       exports_type,
       ExportsType::DefaultOnly | ExportsType::DefaultWithNamed
-    ) {
+    ) && module.build_info().json_data.is_some()
+    {
       namespace_object_as_context = true;
     }
 
@@ -186,32 +187,12 @@ impl DependencyTemplate for CommonJsFullRequireDependencyTemplate {
 
     let require_expr = if let Some(imported_module) =
       module_graph.module_graph_module_by_dependency_id(&dep.id)
-      && let used = {
-        if dep.names.is_empty() {
-          let exports_info_used = compilation
-            .exports_info_artifact
-            .get_prefetched_exports_info_used(&imported_module.module_identifier, *runtime);
-          ExportsInfoGetter::get_used_name(
-            GetUsedNameParam::WithoutNames(&exports_info_used),
-            *runtime,
-            &dep.names,
-          )
-        } else {
-          let exports_info = compilation
-            .exports_info_artifact
-            .get_prefetched_exports_info(
-              &imported_module.module_identifier,
-              PrefetchExportsInfoMode::Nested(&dep.names),
-            );
-          ExportsInfoGetter::get_used_name(
-            GetUsedNameParam::WithNames(&exports_info),
-            *runtime,
-            &dep.names,
-          )
-        }
-      }
-      && let Some(used) = used
-    {
+      && let Some(used) = {
+        let exports_info = compilation
+          .exports_info_artifact
+          .get_exports_info_data(&imported_module.module_identifier);
+        exports_info.get_used_name(&compilation.exports_info_artifact, *runtime, &dep.names)
+      } {
       let mut require_expr = match used {
         UsedName::Normal(used) => {
           format!(

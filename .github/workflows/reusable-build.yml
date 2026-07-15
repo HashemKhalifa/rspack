@@ -12,9 +12,6 @@ on:
       test-runner: # Test Runner labels
         required: false
         type: string
-      bench-runner: # Benchmark Runner labels
-        required: false
-        type: string
       profile: # Rust profile, "ci" or "production" or "profiling"
         default: 'ci'
         required: false
@@ -23,18 +20,16 @@ on:
         type: boolean
         required: false
         default: false
-      bench: # Run benchmarks?
-        type: boolean
-        required: false
-        default: false
       ref: # Git reference to checkout
         required: false
         type: string
-      prefer_docker:
+      binding_postfix: # Use when building multiple profiles in one workflow run; appends a postfix to the uploaded artifact name to distinguish each build.
         required: false
-        default: true
+        type: string
+      force-rebuild: # Disable Rust cache and build from scratch, e.g. for release builds
+        required: false
         type: boolean
-        description: 'Prefer to building in docker if supported'
+        default: false
 
 permissions:
   # Allow commenting on issues
@@ -48,29 +43,16 @@ jobs:
       runner: ${{ inputs.runner }}
       profile: ${{ inputs.profile }}
       ref: ${{ inputs.ref }}
-      prefer_docker: ${{ inputs.prefer_docker }}
+      binding_postfix: ${{ inputs.binding_postfix }}
+      force-rebuild: ${{ inputs.force-rebuild }}
   test:
-    if: inputs.test
+    name: Test ${{ inputs.target }}
+    # The wasm browser variant is a build-only artifact; the wasi (node) variant
+    # already runs the wasm tests (node + browser e2e via a renamed copy).
+    if: inputs.test && inputs.binding_postfix != '-browser'
     needs: build
     uses: ./.github/workflows/reusable-build-test.yml
     with:
       target: ${{ inputs.target }}
       runner: ${{ inputs.test-runner || inputs.runner }}
-      ref: ${{ inputs.ref }}
-  codspeed:
-    name: Codspeed-build
-    if: inputs.bench
-    uses: ./.github/workflows/reusable-build-codspeed.yml
-    with:
-      target: ${{ inputs.target }}
-      runner: ${{ inputs.runner }}
-      ref: ${{ inputs.ref }}
-
-  bench:
-    uses: ./.github/workflows/reusable-build-bench.yml
-    if: inputs.bench
-    needs: [build, codspeed]
-    with:
-      target: ${{ inputs.target }}
-      runner: ${{ inputs.bench-runner || inputs.runner }}
       ref: ${{ inputs.ref }}

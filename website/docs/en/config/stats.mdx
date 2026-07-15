@@ -1,3 +1,7 @@
+---
+description: 'Generate packaging information that can be used to analyze module dependencies and optimize compilation speed'
+---
+
 import PropertyType from '../../../components/PropertyType.tsx';
 import WebpackLicense from '@components/WebpackLicense';
 
@@ -14,14 +18,23 @@ Generate packaging information that can be used to analyze module dependencies a
 
 :::
 
-<PropertyType
-  type="boolean | string | Object"
-  defaultValueList={[
-    {
-      defaultValue: `{"preset":"errors-warnings","timings":true}`,
-    },
-  ]}
-/>
+- **Type:**
+
+```ts
+type StatsPresets =
+  | 'normal'
+  | 'none'
+  | 'verbose'
+  | 'errors-only'
+  | 'errors-warnings'
+  | 'minimal'
+  | 'detailed'
+  | 'summary';
+
+type Stats = boolean | StatsOptions | StatsPresets;
+```
+
+- **Default:** `{ "preset":"errors-warnings", "timings":true }`
 
 ## Stats presets
 
@@ -56,7 +69,7 @@ Enabling `stats.all` will lead to a large amount of data transmission between Ru
 ### stats.preset
 
 <PropertyType
-  type="boolean | string"
+  type="boolean | StatsPresets"
   defaultValueList={[{ defaultValue: 'undefined' }]}
 />
 
@@ -91,11 +104,11 @@ Whether to display information about assets that are related to other assets (li
 ### stats.excludeAssets
 
 <PropertyType
-  type="Array<string | RegExp | (name: string) => boolean> | string | RegExp | (name: string) => boolean | false"
+  type="boolean | string | RegExp | ((name: string, asset: any) => boolean) | Array<string | RegExp | ((name: string, asset: any) => boolean)>"
   defaultValueList={[{ defaultValue: 'false' }]}
 />
 
-Exclude the matching assets information. This can be done with a string, a RegExp, a function that is getting the assets name as an argument and returns a boolean. `stats.excludeAssets` can be an array of any of the above.
+Exclude the matching assets information. This can be done with a string, a RegExp, or a function that receives the asset name and asset object and returns a boolean. `stats.excludeAssets` can be an array of any of the above.
 
 ### stats.cachedAssets
 
@@ -154,6 +167,12 @@ Whether to display information about the built modules to information about the 
 <PropertyType type="number" defaultValueList={[{ defaultValue: '10' }]} />
 
 How many items of chunk modules should be displayed (groups will be collapsed to fit this space).
+
+### stats.chunkModulesSort
+
+<PropertyType type="string" defaultValueList={[{ defaultValue: '"name"' }]} />
+
+Sort the chunk modules by a given field. All of the [sorting fields](/config/stats#sorting-fields) are allowed to be used. Use `!` prefix in the value to reverse the sort order by a given field.
 
 ### stats.dependentModules
 
@@ -294,20 +313,28 @@ Whether to display information about runtime modules.
 
 > The runtime modules are built-in modules of Rspack, used to provide various runtime capabilities.
 
+:::tip
+`stats.runtime` is a compatibility alias for `stats.runtimeModules`. It only takes effect when `stats.runtimeModules` is not specified; if both are set, `stats.runtimeModules` takes precedence.
+:::
+
 ### stats.cachedModules
 
 <PropertyType type="boolean" defaultValueList={[{ defaultValue: 'true' }]} />
 
 Whether to display information about cached (not built) modules.
 
+:::tip
+`stats.cached` is a compatibility alias for `stats.cachedModules`. It only takes effect when `stats.cachedModules` is not specified; if both are set, `stats.cachedModules` takes precedence.
+:::
+
 ### stats.excludeModules
 
 <PropertyType
-  type="Array<string | RegExp | (name: string) => boolean> | string | RegExp | (name: string) => boolean | false"
+  type="boolean | string | RegExp | ((name: string, module: any, type: any) => boolean) | Array<string | RegExp | ((name: string, module: any, type: any) => boolean)>"
   defaultValueList={[{ defaultValue: 'false' }]}
 />
 
-Exclude the matching modules information. This can be done with a string, a RegExp, a function that is getting the modules name as an argument and returns a boolean. `stats.excludeAssets` can be an array of any of the above.
+Exclude the matching modules information. This can be done with a string, a RegExp, or a function that receives the module name, module object, and module type and returns a boolean. `stats.excludeModules` can be an array of any of the above.
 
 ### stats.nestedModules
 
@@ -320,6 +347,12 @@ Whether to display information about modules nested in other modules (like with 
 <PropertyType type="number" defaultValueList={[{ defaultValue: '10' }]} />
 
 How many items of nested modules should be displayed (groups will be collapsed to fit this space).
+
+### stats.nestedModulesSort
+
+<PropertyType type="string" />
+
+Sort the nested modules by a given field. All of the [sorting fields](/config/stats#sorting-fields) are allowed to be used. Use `!` prefix in the value to reverse the sort order by a given field.
 
 ## Module grouping options
 
@@ -452,7 +485,12 @@ Whether to add logging output:
 
 ### stats.loggingDebug
 
-<PropertyType type="Array<string | RegExp | function (name) => boolean>" />
+- **Type:**
+
+```ts
+type FilterItemTypes = RegExp | string | ((value: string) => boolean);
+type StatsLoggingDebug = boolean | FilterItemTypes | FilterItemTypes[];
+```
 
 Whether to display the debug information of the specified [loggers](/api/javascript-api/logger) such as Plugins or Loaders. When `stats.logging` is set to `false`, `stats.loggingDebug` option is ignored.
 
@@ -475,11 +513,26 @@ Whether to display stack traces in the logging output for errors, warnings and t
 
 ### stats.colors
 
-<PropertyType type="boolean" defaultValueList={[{ defaultValue: 'false' }]} />
+- **Type:**
+
+```ts
+type StatsColorOptions = {
+  bold?: string;
+  cyan?: string;
+  green?: string;
+  magenta?: string;
+  red?: string;
+  yellow?: string;
+};
+
+type StatsColors = boolean | StatsColorOptions;
+```
+
+- **Default:** environment-dependent
 
 Whether to output in the different colors.
 
-Defaults to `true` when executing `rspack build` in an environment that supports color output.
+When an object is provided, it customizes the ANSI escape sequences used for each supported color. By default, Rspack enables colors when the current environment supports color output.
 
 ## Compilation options
 
@@ -506,12 +559,6 @@ Whether to display the build date and the build time information.
 <PropertyType type="boolean" defaultValueList={[{ defaultValue: 'true' }]} />
 
 Whether to add information about the Rspack version used.
-
-### stats.context
-
-<PropertyType type="string" />
-
-Whether to display the [base directory](/config/context) as an absolute path for shortening the module specifier.
 
 ### stats.publicPath
 

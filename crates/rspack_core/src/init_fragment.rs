@@ -1,7 +1,7 @@
 use std::{
   collections::{BTreeMap, BTreeSet},
-  fmt::Debug,
-  hash::{BuildHasherDefault, Hash},
+  fmt::{Debug, Display, Formatter},
+  hash::BuildHasherDefault,
   sync::atomic::AtomicU32,
 };
 
@@ -9,8 +9,9 @@ use dyn_clone::{DynClone, clone_trait_object};
 use hashlink::LinkedHashSet;
 use indexmap::IndexMap;
 use rspack_error::Result;
+use rspack_hash::{RspackHash, RspackHasher};
 use rspack_sources::{BoxSource, ConcatSource, RawStringSource, SourceExt};
-use rspack_util::ext::{DynHash, IntoAny};
+use rspack_util::ext::IntoAny;
 use rustc_hash::FxHasher;
 use swc_core::ecma::atoms::Atom;
 
@@ -51,6 +52,56 @@ impl InitFragmentKey {
   }
 }
 
+impl RspackHash for InitFragmentKey {
+  fn hash(&self, state: &mut RspackHasher) {
+    match self {
+      InitFragmentKey::Unique(id) => {
+        "unique".hash(state);
+        id.hash(state);
+      }
+      InitFragmentKey::ESMImport(value) => {
+        "esm-import".hash(state);
+        value.hash(state);
+      }
+      InitFragmentKey::ESMExportStar(value) => {
+        "esm-export-star".hash(state);
+        value.hash(state);
+      }
+      InitFragmentKey::ESMExports => "esm-exports".hash(state),
+      InitFragmentKey::CommonJsExports(value) => {
+        "commonjs-exports".hash(state);
+        value.hash(state);
+      }
+      InitFragmentKey::ModuleExternal(value) => {
+        "module-external".hash(state);
+        value.hash(state);
+      }
+      InitFragmentKey::ExternalModule(value) => {
+        "external-module".hash(state);
+        value.hash(state);
+      }
+      InitFragmentKey::AwaitDependencies => "await-dependencies".hash(state),
+      InitFragmentKey::ESMCompatibility => "esm-compatibility".hash(state),
+      InitFragmentKey::ModuleDecorator(value) => {
+        "module-decorator".hash(state);
+        value.hash(state);
+      }
+      InitFragmentKey::ESMFakeNamespaceObjectFragment(value) => {
+        "esm-fake-namespace-object".hash(state);
+        value.hash(state);
+      }
+      InitFragmentKey::ESMDeferImportNamespaceObjectFragment(value) => {
+        "esm-defer-import-namespace-object".hash(state);
+        value.hash(state);
+      }
+      InitFragmentKey::Const(value) => {
+        "const".hash(state);
+        value.hash(state);
+      }
+    }
+  }
+}
+
 impl InitFragmentKey {
   pub fn merge_fragments<C: InitFragmentRenderContext>(
     &self,
@@ -85,7 +136,7 @@ impl InitFragmentKey {
         res
       }
       InitFragmentKey::ESMExports => {
-        let mut export_map: Vec<(Atom, Atom)> = vec![];
+        let mut export_map: Vec<(Atom, ESMExportBinding)> = vec![];
         let mut iter = fragments.into_iter();
         let first = iter
           .next()
@@ -95,15 +146,17 @@ impl InitFragmentKey {
           .downcast::<ESMExportInitFragment>()
           .expect("fragment of InitFragmentKey::ESMExports should be a ESMExportInitFragment");
         let export_argument = first.exports_argument;
+        let is_circular_module = first.is_circular_module;
         export_map.extend(first.export_map);
         for fragment in iter {
           let fragment = fragment
             .into_any()
             .downcast::<ESMExportInitFragment>()
             .expect("fragment of InitFragmentKey::ESMExports should be a ESMExportInitFragment");
+          debug_assert_eq!(is_circular_module, fragment.is_circular_module);
           export_map.extend(fragment.export_map);
         }
-        ESMExportInitFragment::new(export_argument, export_map).boxed()
+        ESMExportInitFragment::new(export_argument, export_map, is_circular_module).boxed()
       }
       InitFragmentKey::AwaitDependencies => {
         let promises = fragments.into_iter().map(|f| f.into_any().downcast::<AwaitDependenciesInitFragment>().expect("fragment of InitFragmentKey::AwaitDependencies should be a AwaitDependenciesInitFragment")).flat_map(|f| f.promises).collect();
@@ -162,7 +215,7 @@ pub trait InitFragmentRenderContext {
   fn runtime_template(&mut self) -> &mut ModuleCodeTemplate;
 }
 
-pub trait InitFragment<C>: IntoAny + DynHash + DynClone + Debug + Sync + Send {
+pub trait InitFragment<C>: IntoAny + RspackHash + DynClone + Debug + Sync + Send {
   /// getContent + getEndContent
   fn contents(self: Box<Self>, context: &mut C) -> Result<InitFragmentContents>;
 
@@ -171,16 +224,14 @@ pub trait InitFragment<C>: IntoAny + DynHash + DynClone + Debug + Sync + Send {
   fn position(&self) -> i32;
 
   fn key(&self) -> &InitFragmentKey;
+
+  fn top_level_decl_symbols(&self) -> &[Atom] {
+    &[]
+  }
 }
 
 clone_trait_object!(InitFragment<GenerateContext<'_>>);
 clone_trait_object!(InitFragment<ChunkRenderContext>);
-
-impl<C> Hash for dyn InitFragment<C> + '_ {
-  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-    self.dyn_hash(state)
-  }
-}
 
 pub trait InitFragmentExt<C> {
   fn boxed(self) -> Box<dyn InitFragment<C>>;
@@ -201,6 +252,32 @@ pub enum InitFragmentStage {
   StageProvides,
   StageAsyncDependencies,
   StageAsyncESMImports,
+}
+
+impl RspackHash for InitFragmentStage {
+  fn hash(&self, state: &mut RspackHasher) {
+    self.as_str().hash(state);
+  }
+}
+
+impl InitFragmentStage {
+  fn as_str(self) -> &'static str {
+    match self {
+      InitFragmentStage::StageConstants => "constants",
+      InitFragmentStage::StageAsyncBoundary => "async-boundary",
+      InitFragmentStage::StageESMExports => "esm-exports",
+      InitFragmentStage::StageESMImports => "esm-imports",
+      InitFragmentStage::StageProvides => "provides",
+      InitFragmentStage::StageAsyncDependencies => "async-dependencies",
+      InitFragmentStage::StageAsyncESMImports => "async-esm-imports",
+    }
+  }
+}
+
+impl Display for InitFragmentStage {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
 }
 
 /// InitFragment.addToSource
@@ -285,13 +362,14 @@ impl InitFragmentRenderContext for ChunkRenderContext {
   }
 }
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone, rspack_hash::RspackHash)]
 pub struct NormalInitFragment {
   content: String,
   stage: InitFragmentStage,
   position: i32,
   key: InitFragmentKey,
   end_content: Option<String>,
+  top_level_decl_symbols: Vec<Atom>,
 }
 
 impl NormalInitFragment {
@@ -308,7 +386,13 @@ impl NormalInitFragment {
       position,
       key,
       end_content,
+      top_level_decl_symbols: Vec::new(),
     }
+  }
+
+  pub fn with_top_level_decl_symbols(mut self, top_level_decl_symbols: Vec<Atom>) -> Self {
+    self.top_level_decl_symbols = top_level_decl_symbols;
+    self
   }
 }
 
@@ -331,20 +415,51 @@ impl<C> InitFragment<C> for NormalInitFragment {
   fn key(&self) -> &InitFragmentKey {
     &self.key
   }
+
+  fn top_level_decl_symbols(&self) -> &[Atom] {
+    &self.top_level_decl_symbols
+  }
 }
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone)]
+pub enum ESMExportBinding {
+  Getter(Atom),
+  Value(Atom),
+}
+
+impl RspackHash for ESMExportBinding {
+  fn hash(&self, state: &mut RspackHasher) {
+    match self {
+      ESMExportBinding::Getter(value) => {
+        "getter".hash(state);
+        value.hash(state);
+      }
+      ESMExportBinding::Value(value) => {
+        "value".hash(state);
+        value.hash(state);
+      }
+    }
+  }
+}
+
+#[derive(Debug, Clone, rspack_hash::RspackHash)]
 pub struct ESMExportInitFragment {
   exports_argument: ExportsArgument,
   // TODO: should be a map
-  export_map: Vec<(Atom, Atom)>,
+  export_map: Vec<(Atom, ESMExportBinding)>,
+  is_circular_module: Option<bool>,
 }
 
 impl ESMExportInitFragment {
-  pub fn new(exports_argument: ExportsArgument, export_map: Vec<(Atom, Atom)>) -> Self {
+  pub fn new(
+    exports_argument: ExportsArgument,
+    export_map: Vec<(Atom, ESMExportBinding)>,
+    is_circular_module: Option<bool>,
+  ) -> Self {
     Self {
       exports_argument,
       export_map,
+      is_circular_module,
     }
   }
 }
@@ -354,31 +469,73 @@ impl<C: InitFragmentRenderContext> InitFragment<C> for ESMExportInitFragment {
     let runtime_template = context.runtime_template();
 
     self.export_map.sort_by(|a, b| a.0.cmp(&b.0));
-    let exports = format!(
-      "{{\n  {}\n}}",
-      self
-        .export_map
-        .iter()
-        .map(|s| {
-          let prop = property_name(&s.0)?;
-          Ok(format!(
-            "{}: {}",
-            prop,
-            runtime_template.returning_function(&s.1, "")
-          ))
-        })
-        .collect::<Result<Vec<_>>>()?
-        .join(",\n  ")
-    );
 
-    let res = InitFragmentContents {
-      start: format!(
-        "{}({}, {});\n",
-        runtime_template.render_runtime_globals(&RuntimeGlobals::DEFINE_PROPERTY_GETTERS),
-        runtime_template.render_exports_argument(self.exports_argument),
-        exports
-      ),
-      end: None,
+    let mut content =
+      runtime_template.render_runtime_globals(&RuntimeGlobals::DEFINE_PROPERTY_GETTERS);
+    content.push('(');
+    content.push_str(&runtime_template.render_exports_argument(self.exports_argument));
+    content.push_str(", {");
+
+    let mut getters = self
+      .export_map
+      .iter()
+      .filter_map(|(key, value)| match value {
+        ESMExportBinding::Getter(getter) => Some((key, getter)),
+        _ => None,
+      });
+    if let Some((key, getter)) = getters.next() {
+      content.push_str("\n  ");
+      content.push_str(&property_name(key)?);
+      content.push_str(": ");
+      content.push_str(&runtime_template.returning_function(getter, ""));
+    }
+    for (key, getter) in getters {
+      content.push_str(",\n  ");
+      content.push_str(&property_name(key)?);
+      content.push_str(": ");
+      content.push_str(&runtime_template.returning_function(getter, ""));
+    }
+    content.push_str("\n}");
+
+    let mut values_content = String::new();
+    let mut values = self
+      .export_map
+      .iter()
+      .filter_map(|(key, value)| match value {
+        ESMExportBinding::Value(value) => Some((key, value)),
+        _ => None,
+      });
+    if let Some((key, value)) = values.next() {
+      values_content.push_str("\n  ");
+      values_content.push_str(&property_name(key)?);
+      values_content.push_str(": ");
+      values_content.push_str(value);
+    }
+    for (key, value) in values {
+      values_content.push_str(",\n  ");
+      values_content.push_str(&property_name(key)?);
+      values_content.push_str(": ");
+      values_content.push_str(value);
+    }
+
+    if values_content.is_empty() {
+      content.push_str(");\n");
+    } else {
+      content.push_str(", {");
+      content.push_str(&values_content);
+      content.push_str("\n});\n");
+    }
+
+    let res = if matches!(self.is_circular_module, None | Some(true)) {
+      InitFragmentContents {
+        start: content,
+        end: None,
+      }
+    } else {
+      InitFragmentContents {
+        start: String::new(),
+        end: Some(format!("\n{content}")),
+      }
     };
     Ok(res)
   }
@@ -396,7 +553,7 @@ impl<C: InitFragmentRenderContext> InitFragment<C> for ESMExportInitFragment {
   }
 }
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone)]
 pub struct AwaitDependenciesInitFragment {
   promises: LinkedHashSet<String, BuildHasherDefault<FxHasher>>,
 }
@@ -410,6 +567,14 @@ impl AwaitDependenciesInitFragment {
     let mut promises = LinkedHashSet::default();
     promises.insert(promise);
     Self { promises }
+  }
+}
+
+impl RspackHash for AwaitDependenciesInitFragment {
+  fn hash(&self, state: &mut RspackHasher) {
+    for promise in &self.promises {
+      promise.hash(state);
+    }
   }
 }
 
@@ -452,7 +617,7 @@ impl<C: InitFragmentRenderContext> InitFragment<C> for AwaitDependenciesInitFrag
   }
 }
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone, rspack_hash::RspackHash)]
 pub struct ConditionalInitFragment {
   content: String,
   stage: InitFragmentStage,
@@ -568,7 +733,7 @@ fn wrap_in_condition(condition: &str, source: &str) -> String {
   )
 }
 
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone, rspack_hash::RspackHash)]
 pub struct ExternalModuleInitFragment {
   imported_module: String,
   // webpack also supports `ImportSpecifiers` but not ever used.

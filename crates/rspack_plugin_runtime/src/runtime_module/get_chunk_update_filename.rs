@@ -16,9 +16,32 @@ impl GetChunkUpdateFilenameRuntimeModule {
 
 #[async_trait::async_trait]
 impl RuntimeModule for GetChunkUpdateFilenameRuntimeModule {
+  fn runtime_requirements(
+    &self,
+    compilation: &Compilation,
+  ) -> rspack_core::RuntimeModuleRuntimeRequirements {
+    rspack_core::RuntimeModuleRuntimeRequirements {
+      dependencies: {
+        if has_hash_placeholder(
+          compilation
+            .options
+            .output
+            .hot_update_chunk_filename
+            .as_str(),
+        ) {
+          RuntimeGlobals::GET_FULL_HASH
+        } else {
+          RuntimeGlobals::default()
+        }
+      },
+      define: { RuntimeGlobals::GET_CHUNK_UPDATE_SCRIPT_FILENAME },
+      ..Default::default()
+    }
+  }
+
   fn template(&self) -> Vec<(String, String)> {
     vec![(
-      self.id.to_string(),
+      self.id().to_string(),
       include_str!("runtime/get_chunk_update_filename.ejs").to_string(),
     )]
   }
@@ -29,7 +52,7 @@ impl RuntimeModule for GetChunkUpdateFilenameRuntimeModule {
   ) -> rspack_error::Result<String> {
     let compilation = context.compilation;
     let runtime_template = context.runtime_template;
-    if let Some(chunk_ukey) = self.chunk {
+    if let Some(chunk_ukey) = self.chunk() {
       let chunk = compilation
         .build_chunk_graph_artifact
         .chunk_by_ukey
@@ -61,7 +84,7 @@ impl RuntimeModule for GetChunkUpdateFilenameRuntimeModule {
         .await?;
 
       let source = runtime_template.render(
-        &self.id,
+        self.id(),
         Some(serde_json::json!({
           "_filename": format!("'{}'", filename),
         })),
@@ -70,20 +93,6 @@ impl RuntimeModule for GetChunkUpdateFilenameRuntimeModule {
       Ok(source)
     } else {
       unreachable!("should attach chunk for get_main_filename")
-    }
-  }
-
-  fn additional_runtime_requirements(&self, compilation: &Compilation) -> RuntimeGlobals {
-    if has_hash_placeholder(
-      compilation
-        .options
-        .output
-        .hot_update_chunk_filename
-        .as_str(),
-    ) {
-      RuntimeGlobals::GET_FULL_HASH
-    } else {
-      RuntimeGlobals::default()
     }
   }
 }

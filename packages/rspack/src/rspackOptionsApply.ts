@@ -22,7 +22,9 @@ import {
   AsyncWebAssemblyModulesPlugin,
   BundlerInfoRspackPlugin,
   ChunkPrefetchPreloadPlugin,
+  CircularModulesInfoPlugin,
   CommonJsChunkFormatPlugin,
+  CssHttpExternalsRspackPlugin,
   CssModulesPlugin,
   DataUriPlugin,
   DefinePlugin,
@@ -33,13 +35,13 @@ import {
   EnableLibraryPlugin,
   EnableWasmLoadingPlugin,
   EnsureChunkConditionsPlugin,
-  EsmLibraryPlugin,
   EvalDevToolModulePlugin,
   EvalSourceMapDevToolPlugin,
   ExternalsPlugin,
   FileUriPlugin,
   FlagDependencyExportsPlugin,
   FlagDependencyUsagePlugin,
+  HashedModuleIdsPlugin,
   HttpExternalsRspackPlugin,
   HttpUriPlugin,
   InferAsyncModulesPlugin,
@@ -69,6 +71,7 @@ import {
   URLPlugin,
   WorkerPlugin,
 } from './builtin-plugin';
+import { getTargetProperties, getTargetsProperties } from './config/target';
 import MemoryCachePlugin from './lib/cache/MemoryCachePlugin';
 import EntryOptionPlugin from './lib/EntryOptionPlugin';
 import IgnoreWarningsPlugin from './lib/IgnoreWarningsPlugin';
@@ -100,11 +103,17 @@ export class RspackOptionsApply {
         options.externalsType,
         options.externals,
         false,
+        getModernModuleCjsExternalType(options),
       ).apply(compiler);
     }
 
     if (options.externalsPresets.node) {
       new NodeTargetPlugin().apply(compiler);
+      // Keep this aligned with webpack's node externals preset: CSS HTTP(S)
+      // @import/url() requests are externalized during factorization. This
+      // happens before HttpUriPlugin can fetch buildHttp resources, so buildHttp
+      // does not bundle those CSS requests for node targets.
+      new CssHttpExternalsRspackPlugin().apply(compiler);
     }
     if (options.externalsPresets.electronMain) {
       new ElectronTargetPlugin('main').apply(compiler);
@@ -126,15 +135,10 @@ export class RspackOptionsApply {
     if (options.externalsPresets.nwjs) {
       new ExternalsPlugin('node-commonjs', 'nw.gui', false).apply(compiler);
     }
-    if (
-      options.externalsPresets.web ||
-      options.externalsPresets.webAsync ||
-      options.externalsPresets.node
-    ) {
-      new HttpExternalsRspackPlugin(
-        true,
-        !!options.externalsPresets.webAsync,
-      ).apply(compiler);
+    if (options.externalsPresets.web || options.externalsPresets.webAsync) {
+      new HttpExternalsRspackPlugin(!!options.externalsPresets.webAsync).apply(
+        compiler,
+      );
     }
 
     new ChunkPrefetchPreloadPlugin().apply(compiler);
@@ -260,12 +264,16 @@ export class RspackOptionsApply {
     }
 
     if (options.optimization.sideEffects) {
-      new SideEffectsFlagPlugin(/* options.optimization.sideEffects === true */).apply(
-        compiler,
-      );
+      new SideEffectsFlagPlugin(
+        options.experiments.pureFunctions &&
+          options.optimization.sideEffects === true,
+      ).apply(compiler);
     }
     if (options.optimization.providedExports) {
       new FlagDependencyExportsPlugin().apply(compiler);
+    }
+    if (options.mode === 'production') {
+      new CircularModulesInfoPlugin().apply(compiler);
     }
     if (options.optimization.usedExports) {
       new FlagDependencyUsagePlugin(
@@ -289,37 +297,35 @@ export class RspackOptionsApply {
       options.output.enabledLibraryTypes &&
       options.output.enabledLibraryTypes.length > 0
     ) {
-      let modernModuleCount = 0;
-      for (const type of options.output.enabledLibraryTypes) {
-        if (type === 'modern-module') {
-          modernModuleCount++;
-        }
-      }
+      const hasModernModule =
+        options.output.enabledLibraryTypes.includes('modern-module');
+      const hasNonModernModule = options.output.enabledLibraryTypes.some(
+        (t) => t !== 'modern-module',
+      );
 
-      if (options.output.library?.preserveModules && modernModuleCount === 0) {
-        throw new Error(
-          'preserveModules only works for `modern-module` library type',
+      if (options.output.library?.preserveModules && !hasModernModule) {
+        const logger = compiler.getInfrastructureLogger(
+          'rspack.RspackOptionsApply',
+        );
+        logger.warn(
+          '`preserveModules` only works for `modern-module` library type and will be ignored for other library types.',
         );
       }
 
-      if (modernModuleCount > 0) {
-        // ESM format has impact on chunkLoading and chunkFormat, which is not compatible with
-        // other library types
-        if (modernModuleCount !== options.output.enabledLibraryTypes.length) {
-          throw new Error(
-            '`modern-module` cannot used together with other library types',
-          );
-        }
+      if (hasModernModule && hasNonModernModule) {
+        const logger = compiler.getInfrastructureLogger(
+          'rspack.RspackOptionsApply',
+        );
+        logger.warn(
+          '`modern-module` is used together with other library types. ESM format has impact on chunkLoading and chunkFormat, which may not be compatible with other library types.',
+        );
+      }
 
-        enableLibSplitChunks = true;
-        new EsmLibraryPlugin({
-          preserveModules: options.output.library?.preserveModules,
-          splitChunks: options.optimization.splitChunks,
-        }).apply(compiler);
-      } else {
-        for (const type of options.output.enabledLibraryTypes) {
-          new EnableLibraryPlugin(type).apply(compiler);
+      for (const type of options.output.enabledLibraryTypes) {
+        if (type === 'modern-module') {
+          enableLibSplitChunks = true;
         }
+        new EnableLibraryPlugin(type).apply(compiler);
       }
     }
 
@@ -346,6 +352,10 @@ export class RspackOptionsApply {
         }
         case 'deterministic': {
           new DeterministicModuleIdsPlugin().apply(compiler);
+          break;
+        }
+        case 'hashed': {
+          new HashedModuleIdsPlugin().apply(compiler);
           break;
         }
         default:
@@ -429,4 +439,22 @@ export class RspackOptionsApply {
 
     compiler.hooks.afterResolvers.call(compiler);
   }
+}
+
+function getModernModuleCjsExternalType(
+  options: RspackOptionsNormalized,
+): 'commonjs' | 'node-commonjs' {
+  const { context, target } = options;
+  assertNotNill(context);
+
+  if (target == null || target === false) {
+    return 'commonjs';
+  }
+
+  const targetProperties =
+    typeof target === 'string'
+      ? getTargetProperties(target, context)
+      : getTargetsProperties(target, context);
+
+  return targetProperties.nodeBuiltins ? 'node-commonjs' : 'commonjs';
 }

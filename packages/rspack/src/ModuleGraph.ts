@@ -1,9 +1,6 @@
-import type {
-  Dependency,
-  JsModuleGraph,
-  ModuleGraphConnection,
-} from '@rspack/binding';
+import type { Dependency, JsModuleGraph } from '@rspack/binding';
 import { ExportsInfo } from './ExportsInfo';
+import type { ModuleGraphConnection } from './ModuleGraphConnection';
 import type { Module } from './Module';
 
 export default class ModuleGraph {
@@ -23,6 +20,17 @@ export default class ModuleGraph {
 
   getResolvedModule(dependency: Dependency): Module | null {
     return this.#inner.getResolvedModule(dependency);
+  }
+
+  getUsedExports(
+    module: Module,
+    runtime: string | string[],
+  ): string[] | boolean | null {
+    return this.#inner.getUsedExports(module, runtime);
+  }
+
+  getProvidedExports(module: Module): true | string[] | null {
+    return this.#inner.getProvidedExports(module);
   }
 
   getParentModule(dependency: Dependency): Module | null {

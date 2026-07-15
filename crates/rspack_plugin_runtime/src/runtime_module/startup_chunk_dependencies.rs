@@ -20,9 +20,26 @@ impl StartupChunkDependenciesRuntimeModule {
 
 #[async_trait::async_trait]
 impl RuntimeModule for StartupChunkDependenciesRuntimeModule {
+  fn runtime_requirements(
+    &self,
+    _compilation: &Compilation,
+  ) -> rspack_core::RuntimeModuleRuntimeRequirements {
+    let mut dependencies = RuntimeGlobals::STARTUP
+      | RuntimeGlobals::ENSURE_CHUNK
+      | RuntimeGlobals::ENSURE_CHUNK_INCLUDE_ENTRIES;
+    if self.async_chunk_loading {
+      dependencies.insert(RuntimeGlobals::REQUIRE);
+    }
+    rspack_core::RuntimeModuleRuntimeRequirements {
+      dependencies,
+      define: { RuntimeGlobals::STARTUP },
+      ..Default::default()
+    }
+  }
+
   fn template(&self) -> Vec<(String, String)> {
     vec![(
-      self.id.to_string(),
+      self.id().to_string(),
       include_str!("runtime/startup_chunk_dependencies.ejs").to_string(),
     )]
   }
@@ -33,7 +50,7 @@ impl RuntimeModule for StartupChunkDependenciesRuntimeModule {
   ) -> rspack_error::Result<String> {
     let compilation = context.compilation;
     let runtime_template = context.runtime_template;
-    if let Some(chunk_ukey) = self.chunk {
+    if let Some(chunk_ukey) = self.chunk() {
       let chunk_ids = compilation
         .build_chunk_graph_artifact
         .chunk_graph
@@ -48,31 +65,31 @@ impl RuntimeModule for StartupChunkDependenciesRuntimeModule {
             .chunk_by_ukey
             .expect_get(&chunk_ukey)
             .expect_id()
-            .to_string()
+            .clone()
         })
         .collect::<Vec<_>>();
 
       let body = if self.async_chunk_loading {
         match chunk_ids.len() {
           1 => format!(
-            r#"return {}("{}").then(next);"#,
+            "return {}({}).then(next);",
             runtime_template.render_runtime_globals(&RuntimeGlobals::ENSURE_CHUNK),
-            chunk_ids.first().expect("Should has at least one chunk")
+            rspack_util::json_stringify(chunk_ids.first().expect("Should has at least one chunk"))
           ),
           2 => format!(
-            r#"return Promise.all([{}]).then(next);"#,
+            "return Promise.all([{}]).then(next);",
             chunk_ids
               .iter()
               .map(|cid| format!(
-                r#"{}("{}")"#,
+                "{}({})",
                 runtime_template.render_runtime_globals(&RuntimeGlobals::ENSURE_CHUNK),
-                cid
+                rspack_util::json_stringify(cid)
               ))
               .join(",\n")
           ),
           _ => format!(
-            r#"return Promise.all({}.map({}, {})).then(next);"#,
-            serde_json::to_string(&chunk_ids).expect("Invalid json to string"),
+            "return Promise.all({}.map({}, {})).then(next);",
+            simd_json::to_string(&chunk_ids).expect("invalid json to_string"),
             runtime_template.render_runtime_globals(&RuntimeGlobals::ENSURE_CHUNK),
             runtime_template.render_runtime_globals(&RuntimeGlobals::REQUIRE)
           ),
@@ -82,9 +99,9 @@ impl RuntimeModule for StartupChunkDependenciesRuntimeModule {
           .iter()
           .map(|cid| {
             format!(
-              r#"{}("{}");"#,
+              "{}({});",
               runtime_template.render_runtime_globals(&RuntimeGlobals::ENSURE_CHUNK),
-              cid
+              rspack_util::json_stringify(cid)
             )
           })
           .chain(iter::once("return next();".to_string()))
@@ -92,7 +109,7 @@ impl RuntimeModule for StartupChunkDependenciesRuntimeModule {
       };
 
       let source = runtime_template.render(
-        &self.id,
+        self.id(),
         Some(serde_json::json!({
           "_body": body,
         })),
@@ -102,11 +119,5 @@ impl RuntimeModule for StartupChunkDependenciesRuntimeModule {
     } else {
       unreachable!("should have chunk for StartupChunkDependenciesRuntimeModule")
     }
-  }
-
-  fn additional_runtime_requirements(&self, _compilation: &Compilation) -> RuntimeGlobals {
-    RuntimeGlobals::STARTUP
-      | RuntimeGlobals::ENSURE_CHUNK
-      | RuntimeGlobals::ENSURE_CHUNK_INCLUDE_ENTRIES
   }
 }

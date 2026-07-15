@@ -1,16 +1,16 @@
-use std::hash::Hash;
+use std::sync::{Arc, LazyLock};
 
 use itertools::Itertools;
 use rspack_core::{
   AsyncDependenciesBlock, ConstDependency, DependencyRange, EntryOptions, GroupOptions,
+  JavascriptParserWorkerOptions, JavascriptParserWorkerUrl,
 };
-use rspack_hash::RspackHash;
+use rspack_hash::{RspackHash, RspackHasher};
 use rspack_util::SpanExt;
 use rustc_hash::{FxHashMap, FxHashSet};
-use swc_core::{
-  atoms::Atom,
-  common::{Span, Spanned},
-  ecma::ast::{CallExpr, ExprOrSpread, Ident, NewExpr, VarDeclarator},
+use swc_atoms::Atom;
+use swc_experimental_ecma_ast::{
+  CallExpr, ExprOrSpread, GetSpan, Ident, NewExpr, Span, VarDeclarator,
 };
 use url::Url;
 
@@ -80,9 +80,10 @@ fn add_dependencies(
   parsed_path: ParsedNewWorkerPath,
   parsed_options: Option<ParsedNewWorkerOptions>,
   need_new_url: bool,
+  url_mode: Option<JavascriptParserWorkerUrl>,
 ) {
   let output_options = &parser.compiler_options.output;
-  let mut hasher = RspackHash::from(output_options);
+  let mut hasher = RspackHasher::from(output_options);
   parser.module_identifier.hash(&mut hasher);
   parser.worker_index.hash(&mut hasher);
   parser.worker_index += 1;
@@ -99,6 +100,7 @@ fn add_dependencies(
     span.into(),
     parsed_path.range.into(),
     need_new_url,
+    url_mode,
   ));
   let range = DependencyRange::from(span);
   let loc = parser.to_dependency_location(range);
@@ -149,12 +151,12 @@ fn add_dependencies(
 
 fn handle_worker<'a>(
   parser: &mut JavascriptParser,
-  args: &'a [ExprOrSpread],
+  args: &'a [ExprOrSpread<'a>],
   span: Span,
 ) -> Option<(
   ParsedNewWorkerPath,
   Option<ParsedNewWorkerOptions>,
-  &'a ExprOrSpread,
+  &'a ExprOrSpread<'a>,
   bool,
 )> {
   if let Some(expr_or_spread) = args.first()
@@ -175,8 +177,9 @@ fn handle_worker<'a>(
       && is_meta_url(parser, member_expr)
     {
       need_new_url = true;
+      let span = member_expr.span();
       ParsedNewWorkerPath {
-        range: (member_expr.span().real_lo(), member_expr.span().real_hi()),
+        range: (span.real_lo(), span.real_hi()),
         value: Url::from_file_path(parser.resource_data.resource())
           .expect("should be a path")
           .to_string(),
@@ -231,12 +234,19 @@ fn handle_worker<'a>(
   }
 }
 
-pub struct WorkerPlugin {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkerPluginInner {
   new_syntax: FxHashSet<String>,
   call_syntax: FxHashSet<String>,
   from_new_syntax: FxHashSet<(String, String)>,
   from_call_syntax: FxHashSet<(String, String)>,
   pattern_syntax: FxHashMap<String, FxHashSet<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerPlugin {
+  inner: Arc<WorkerPluginInner>,
+  url_mode: Option<JavascriptParserWorkerUrl>,
 }
 
 const WORKER_SPECIFIER_TAG: &str = "_identifier__worker_specifier_tag__";
@@ -247,30 +257,46 @@ const DEFAULT_SYNTAX: [&str; 4] = [
   "Worker from worker_threads",
 ];
 
+static DEFAULT_WORKER_PLUGIN: LazyLock<Arc<WorkerPluginInner>> = LazyLock::new(|| {
+  let mut worker_plugin = WorkerPluginInner::empty();
+  for syntax in DEFAULT_SYNTAX {
+    worker_plugin.handle_syntax(syntax);
+  }
+  Arc::new(worker_plugin)
+});
+
 #[derive(Debug, Clone)]
 struct WorkerSpecifierData {
   key: Atom,
 }
 
-impl WorkerPlugin {
-  pub fn new(syntax_list: &[String]) -> Self {
-    let mut this = Self {
+impl WorkerPluginInner {
+  fn empty() -> Self {
+    Self {
       new_syntax: FxHashSet::default(),
       call_syntax: FxHashSet::default(),
       from_new_syntax: FxHashSet::default(),
       from_call_syntax: FxHashSet::default(),
       pattern_syntax: FxHashMap::default(),
-    };
-    for syntax in syntax_list {
-      if syntax == "..." {
-        for syntax in DEFAULT_SYNTAX {
-          this.handle_syntax(syntax);
-        }
-      } else {
-        this.handle_syntax(syntax);
-      }
     }
-    this
+  }
+
+  fn merge(&mut self, other: &Self) {
+    self.new_syntax.extend(other.new_syntax.iter().cloned());
+    self.call_syntax.extend(other.call_syntax.iter().cloned());
+    self
+      .from_new_syntax
+      .extend(other.from_new_syntax.iter().cloned());
+    self
+      .from_call_syntax
+      .extend(other.from_call_syntax.iter().cloned());
+    for (pattern, members) in &other.pattern_syntax {
+      self
+        .pattern_syntax
+        .entry(pattern.clone())
+        .or_default()
+        .extend(members.iter().cloned());
+    }
   }
 
   fn handle_syntax(&mut self, syntax: &str) {
@@ -306,36 +332,69 @@ impl WorkerPlugin {
   }
 }
 
-impl JavascriptParserPlugin for WorkerPlugin {
+impl WorkerPlugin {
+  pub fn new(options: &JavascriptParserWorkerOptions) -> Self {
+    let default_syntax = ["...".to_string()];
+    let syntax_list = options.alias.as_deref().unwrap_or(&default_syntax);
+    if syntax_list.len() == 1 && syntax_list[0] == "..." {
+      return Self {
+        inner: DEFAULT_WORKER_PLUGIN.clone(),
+        url_mode: options.url,
+      };
+    }
+
+    let mut inner = WorkerPluginInner::empty();
+    for syntax in syntax_list {
+      if syntax == "..." {
+        inner.merge(&DEFAULT_WORKER_PLUGIN);
+      } else {
+        inner.handle_syntax(syntax);
+      }
+    }
+    Self {
+      inner: Arc::new(inner),
+      url_mode: options.url,
+    }
+  }
+}
+
+#[rspack_macros::implemented_javascript_parser_hooks]
+impl<'p, 'a> JavascriptParserPlugin<'p, 'a> for WorkerPlugin {
   fn pre_declarator(
     &self,
-    parser: &mut JavascriptParser,
+    parser: &mut JavascriptParser<'p>,
     decl: &VarDeclarator,
     _statement: VariableDeclaration<'_>,
   ) -> Option<bool> {
     if let Some(ident) = decl.name.as_ident()
-      && self.pattern_syntax.contains_key(ident.sym.as_str())
+      && self
+        .inner
+        .pattern_syntax
+        .contains_key(ident.id.sym.as_str())
     {
+      let key = Atom::from(ident.id.sym.as_str());
       parser.tag_variable(
-        ident.sym.clone(),
+        key.clone(),
         WORKER_SPECIFIER_TAG,
-        Some(WorkerSpecifierData {
-          key: ident.sym.clone(),
-        }),
+        Some(WorkerSpecifierData { key }),
       );
       return Some(true);
     }
     None
   }
 
-  fn pattern(&self, parser: &mut JavascriptParser, ident: &Ident, for_name: &str) -> Option<bool> {
-    if self.pattern_syntax.contains_key(for_name) {
+  fn pattern(
+    &self,
+    parser: &mut JavascriptParser<'p>,
+    ident: &Ident,
+    for_name: &str,
+  ) -> Option<bool> {
+    if self.inner.pattern_syntax.contains_key(for_name) {
+      let key = Atom::from(ident.sym.as_str());
       parser.tag_variable(
-        ident.sym.clone(),
+        key.clone(),
         WORKER_SPECIFIER_TAG,
-        Some(WorkerSpecifierData {
-          key: ident.sym.clone(),
-        }),
+        Some(WorkerSpecifierData { key }),
       );
       return Some(true);
     }
@@ -344,7 +403,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
 
   fn call_member_chain(
     &self,
-    parser: &mut JavascriptParser,
+    parser: &mut JavascriptParser<'p>,
     call_expr: &CallExpr,
     for_name: &str,
     members: &[Atom],
@@ -358,7 +417,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
       .definitions_db
       .expect_get_tag_info(parser.current_tag_info?);
     let data = WorkerSpecifierData::downcast(tag_info.data.clone()?);
-    if let Some(value) = self.pattern_syntax.get(data.key.as_str())
+    if let Some(value) = self.inner.pattern_syntax.get(data.key.as_str())
       && value.contains(&members.iter().map(|id| id.as_str()).join("."))
     {
       return handle_worker(parser, &call_expr.args, call_expr.span).map(
@@ -370,6 +429,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
             parsed_path,
             parsed_options,
             need_new_url,
+            self.url_mode,
           );
           if let Some(callee) = call_expr.callee.as_expr() {
             parser.walk_expression(callee);
@@ -386,7 +446,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
 
   fn call(
     &self,
-    parser: &mut JavascriptParser,
+    parser: &mut JavascriptParser<'p>,
     call_expr: &CallExpr,
     for_name: &str,
   ) -> Option<bool> {
@@ -397,6 +457,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
       let settings = ESMSpecifierData::downcast(tag_info.data.clone()?);
       let ids = settings.ids.iter().map(|id| id.as_str()).join(".");
       if self
+        .inner
         .from_call_syntax
         .contains(&(ids, settings.source.to_string()))
       {
@@ -409,6 +470,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
               parsed_path,
               parsed_options,
               need_new_url,
+              self.url_mode,
             );
             if let Some(callee) = call_expr.callee.as_expr() {
               parser.walk_expression(callee);
@@ -422,7 +484,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
       }
       return None;
     }
-    if !self.call_syntax.contains(for_name) {
+    if !self.inner.call_syntax.contains(for_name) {
       return None;
     }
     handle_worker(parser, &call_expr.args, call_expr.span).map(
@@ -434,6 +496,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
           parsed_path,
           parsed_options,
           need_new_url,
+          self.url_mode,
         );
         if let Some(callee) = call_expr.callee.as_expr() {
           parser.walk_expression(callee);
@@ -448,7 +511,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
 
   fn new_expression(
     &self,
-    parser: &mut JavascriptParser,
+    parser: &mut JavascriptParser<'p>,
     new_expr: &NewExpr,
     for_name: &str,
   ) -> Option<bool> {
@@ -459,6 +522,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
       let settings = ESMSpecifierData::downcast(tag_info.data.clone()?);
       let ids = settings.ids.iter().map(|id| id.as_str()).join(".");
       if self
+        .inner
         .from_new_syntax
         .contains(&(ids, settings.source.to_string()))
       {
@@ -474,6 +538,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
               parsed_path,
               parsed_options,
               need_new_url,
+              self.url_mode,
             );
             parser.walk_expression(&new_expr.callee);
             if let Some(args) = &new_expr.args
@@ -486,7 +551,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
       }
       return None;
     }
-    if !self.new_syntax.contains(for_name) {
+    if !self.inner.new_syntax.contains(for_name) {
       return None;
     }
     new_expr
@@ -501,6 +566,7 @@ impl JavascriptParserPlugin for WorkerPlugin {
           parsed_path,
           parsed_options,
           need_new_url,
+          self.url_mode,
         );
         parser.walk_expression(&new_expr.callee);
         if let Some(args) = &new_expr.args
@@ -547,4 +613,30 @@ fn test_worker_from() {
     worker_from("()() from worker_threads").ok(),
     Some((("()", true), "worker_threads"))
   );
+}
+
+#[test]
+fn test_default_worker_syntax_matches_explicit_syntax() {
+  let explicit_syntax = DEFAULT_SYNTAX
+    .iter()
+    .map(|syntax| syntax.to_string())
+    .collect::<Vec<_>>();
+
+  assert_eq!(
+    WorkerPlugin::new(&JavascriptParserWorkerOptions::new(
+      vec!["...".to_string()],
+      None
+    )),
+    WorkerPlugin::new(&JavascriptParserWorkerOptions::new(explicit_syntax, None))
+  );
+}
+
+#[test]
+fn test_default_worker_syntax_reuses_shared_inner() {
+  let worker_plugin = WorkerPlugin::new(&JavascriptParserWorkerOptions::new(
+    vec!["...".to_string()],
+    None,
+  ));
+
+  assert!(Arc::ptr_eq(&worker_plugin.inner, &DEFAULT_WORKER_PLUGIN));
 }

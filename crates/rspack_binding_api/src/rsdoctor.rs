@@ -13,6 +13,7 @@ use rspack_plugin_rsdoctor::{
   RsdoctorSideEffect, RsdoctorSideEffectLocation, RsdoctorSourcePosition, RsdoctorSourceRange,
   RsdoctorStatement, RsdoctorVariable,
 };
+use rustc_hash::FxHashSet;
 
 #[napi(object)]
 pub struct JsRsdoctorModule {
@@ -31,6 +32,7 @@ pub struct JsRsdoctorModule {
   pub issuer_path: Vec<i32>,
   pub bailout_reason: Vec<String>,
   pub side_effects_locations: Vec<JsRsdoctorSideEffectLocation>,
+  pub exports_type: String,
 }
 
 impl From<RsdoctorModule> for JsRsdoctorModule {
@@ -59,6 +61,7 @@ impl From<RsdoctorModule> for JsRsdoctorModule {
         .into_iter()
         .map(|loc| loc.into())
         .collect::<Vec<_>>(),
+      exports_type: value.exports_type.to_string(),
     }
   }
 }
@@ -83,6 +86,20 @@ impl From<RsdoctorDependency> for JsRsdoctorDependency {
     }
   }
 }
+
+// Edge: [originModule, originExport, targetModule, targetExport, dependencyId, loc]
+// (origin=consumer, target=provider). The trailing dependencyId/loc are appended so existing
+// positional `[a, b, c, d]` consumers keep working. `loc` is the consuming reference site as
+// rspack's standard location string (`line:col`, `line:col-endCol`, or `line:col-endLine:endCol`),
+// or null when unavailable.
+pub type JsRsdoctorExportUsageEdge = (
+  i32,
+  Option<Vec<String>>,
+  i32,
+  Option<Vec<String>>,
+  String,
+  Option<String>,
+);
 
 #[napi(object)]
 pub struct JsRsdoctorConnection {
@@ -391,6 +408,10 @@ pub struct JsRsdoctorModuleGraph {
   pub dependencies: Vec<JsRsdoctorDependency>,
   pub chunk_modules: Vec<JsRsdoctorChunkModules>,
   pub connections_only_imports: Vec<JsRsdoctorConnectionsOnlyImport>,
+  #[napi(
+    ts_type = "Array<[number, Array<string> | null, number, Array<string> | null, string, string | null]>"
+  )]
+  pub export_usage_edges: Vec<JsRsdoctorExportUsageEdge>,
 }
 
 impl From<RsdoctorModuleGraph> for JsRsdoctorModuleGraph {
@@ -403,6 +424,20 @@ impl From<RsdoctorModuleGraph> for JsRsdoctorModuleGraph {
         .connections_only_imports
         .into_iter()
         .map(|s| s.into())
+        .collect(),
+      export_usage_edges: value
+        .export_usage_edges
+        .into_iter()
+        .map(|edge| {
+          (
+            edge.origin_module,
+            edge.origin_export,
+            edge.target_module,
+            edge.target_export,
+            edge.dependency_id,
+            edge.loc,
+          )
+        })
         .collect(),
     }
   }
@@ -556,6 +591,7 @@ pub struct RawRsdoctorPluginOptions {
   pub chunk_graph_features: Either<bool, Vec<String>>,
   #[napi(ts_type = "{ module?: boolean; cheap?: boolean } | undefined")]
   pub source_map_features: Option<JsRsdoctorSourceMapFeatures>,
+  pub export_usage_graph: Option<bool>,
 }
 
 #[napi(object)]
@@ -582,29 +618,30 @@ impl From<RawRsdoctorPluginOptions> for RsdoctorPluginOptions {
 
     Self {
       module_graph_features: match value.module_graph_features {
-        Either::A(true) => HashSet::from([
+        Either::A(true) => FxHashSet::from_iter([
           RsdoctorPluginModuleGraphFeature::ModuleGraph,
           RsdoctorPluginModuleGraphFeature::ModuleIds,
           RsdoctorPluginModuleGraphFeature::ModuleSources,
         ]),
-        Either::A(false) => HashSet::new(),
+        Either::A(false) => FxHashSet::default(),
         Either::B(features) => features
           .into_iter()
           .map(RsdoctorPluginModuleGraphFeature::from)
-          .collect::<HashSet<_>>(),
+          .collect::<FxHashSet<_>>(),
       },
       chunk_graph_features: match value.chunk_graph_features {
-        Either::A(true) => HashSet::from([
+        Either::A(true) => FxHashSet::from_iter([
           RsdoctorPluginChunkGraphFeature::ChunkGraph,
           RsdoctorPluginChunkGraphFeature::Assets,
         ]),
-        Either::A(false) => HashSet::new(),
+        Either::A(false) => FxHashSet::default(),
         Either::B(features) => features
           .into_iter()
           .map(RsdoctorPluginChunkGraphFeature::from)
-          .collect::<HashSet<_>>(),
+          .collect::<FxHashSet<_>>(),
       },
       source_map_features,
+      export_usage_graph: value.export_usage_graph.unwrap_or_default(),
     }
   }
 }

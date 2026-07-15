@@ -14,8 +14,13 @@ gitignore
 
 # Ignore test related
 tests/rspack-test/**/*
+!tests/rspack-test/**/
+!tests/rspack-test/**/rspack.config.*
 packages/**/etc/**/*
 tests/e2e/cases/make/rewrite-factorize-request/file.js
+
+# Ignore benchmark fixtures
+xtask/benchmark/benches/fixtures/rspack_sources/**
 
 # Crates
 crates/**

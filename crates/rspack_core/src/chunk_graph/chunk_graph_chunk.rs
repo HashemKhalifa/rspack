@@ -1,18 +1,13 @@
 //!  There are methods whose verb is `ChunkGraphChunk`
 
-use std::{
-  collections::VecDeque,
-  fmt,
-  hash::{BuildHasherDefault, Hash},
-};
+use std::{collections::VecDeque, fmt, hash::BuildHasherDefault};
 
 use hashlink::LinkedHashMap;
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use itertools::Itertools;
 use rspack_cacheable::{cacheable, with::AsPreset};
-use rspack_collections::{
-  DatabaseItem, IdentifierHasher, IdentifierLinkedMap, IdentifierMap, IdentifierSet,
-};
+use rspack_collections::{IdentifierHasher, IdentifierLinkedMap, IdentifierMap, IdentifierSet};
+use rspack_hash::RspackHasher;
 use rspack_util::fx_hash::FxIndexSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Serialize, Serializer};
@@ -21,7 +16,8 @@ use ustr::Ustr;
 use crate::{
   BoxModule, Chunk, ChunkByUkey, ChunkGraph, ChunkGraphModule, ChunkGroupByUkey, ChunkGroupUkey,
   ChunkUkey, Compilation, ExportsInfoArtifact, Module, ModuleGraph, ModuleGraphCacheArtifact,
-  ModuleIdentifier, RuntimeGlobals, RuntimeModule, SourceType, find_graph_roots, merge_runtime,
+  ModuleIdentifier, RuntimeGlobals, RuntimeModule, SideEffectsStateArtifact, SourceType,
+  find_graph_roots, merge_runtime,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -64,13 +60,27 @@ impl Serialize for ChunkId {
   where
     S: Serializer,
   {
-    serializer.serialize_str(self.0.as_str())
+    if let Some(n) = self.as_number() {
+      serializer.serialize_u32(n)
+    } else {
+      serializer.serialize_str(self.0.as_str())
+    }
   }
 }
 
 impl ChunkId {
+  pub fn as_number(&self) -> Option<u32> {
+    rspack_util::numeric_id_value(self.0.as_str())
+  }
+
   pub fn as_str(&self) -> &str {
     self.0.as_str()
+  }
+}
+
+impl rspack_hash::RspackHash for ChunkId {
+  fn hash(&self, state: &mut RspackHasher) {
+    self.0.as_str().hash(state);
   }
 }
 
@@ -723,19 +733,19 @@ impl ChunkGraph {
     chunk: &ChunkUkey,
     module_graph: &ModuleGraph,
     module_graph_cache: &ModuleGraphCacheArtifact,
+    side_effects_state_artifact: &SideEffectsStateArtifact,
     exports_info_artifact: &ExportsInfoArtifact,
   ) -> Vec<ModuleIdentifier> {
     let cgc = self.expect_chunk_graph_chunk(chunk);
-    let mut input = cgc.modules.iter().copied().collect::<Vec<_>>();
-    input.sort_unstable();
+    let input = cgc.modules.iter().copied().collect::<Vec<_>>();
 
-    let mut modules = find_graph_roots(input, |module| {
-      let mut set: IdentifierSet = Default::default();
+    let mut modules = find_graph_roots(input, |module, add_dependency| {
       fn add_dependencies(
         module: ModuleIdentifier,
-        set: &mut IdentifierSet,
+        add_dependency: &mut dyn FnMut(ModuleIdentifier),
         module_graph: &ModuleGraph,
         module_graph_cache: &ModuleGraphCacheArtifact,
+        side_effects_state_artifact: &SideEffectsStateArtifact,
         exports_info_artifact: &ExportsInfoArtifact,
       ) {
         for connection in module_graph.get_outgoing_connections(&module) {
@@ -744,6 +754,7 @@ impl ChunkGraph {
             module_graph,
             None,
             module_graph_cache,
+            side_effects_state_artifact,
             exports_info_artifact,
           );
           match active_state {
@@ -753,27 +764,28 @@ impl ChunkGraph {
             crate::ConnectionState::TransitiveOnly => {
               add_dependencies(
                 *connection.module_identifier(),
-                set,
+                add_dependency,
                 module_graph,
                 module_graph_cache,
+                side_effects_state_artifact,
                 exports_info_artifact,
               );
               continue;
             }
             _ => {}
           }
-          set.insert(*connection.module_identifier());
+          add_dependency(*connection.module_identifier());
         }
       }
 
       add_dependencies(
         module,
-        &mut set,
+        add_dependency,
         module_graph,
         module_graph_cache,
+        side_effects_state_artifact,
         exports_info_artifact,
       );
-      set.into_iter().collect()
     });
 
     modules.sort_unstable();
@@ -818,8 +830,8 @@ impl ChunkGraph {
     chunk_by_ukey: &ChunkByUkey,
     chunk_group_by_ukey: &ChunkGroupByUkey,
   ) -> impl Iterator<Item = ChunkUkey> {
-    let mut set = IndexSet::new();
-    let mut entrypoints = IndexSet::new();
+    let mut set = FxIndexSet::default();
+    let mut entrypoints = FxIndexSet::default();
 
     let chunk = chunk_by_ukey.expect_get(chunk_ukey);
 
@@ -880,7 +892,7 @@ impl ChunkGraph {
     chunk_group_by_ukey: &ChunkGroupByUkey,
   ) -> impl Iterator<Item = ChunkUkey> {
     let chunk = chunk_by_ukey.expect_get(chunk_ukey);
-    let mut set = IndexSet::new();
+    let mut set = FxIndexSet::default();
     for chunk_group_ukey in chunk.get_sorted_groups_iter(chunk_group_by_ukey) {
       let chunk_group = chunk_group_by_ukey.expect_get(chunk_group_ukey);
       if chunk_group.kind.is_entrypoint() {
@@ -1165,5 +1177,35 @@ impl ChunkGraph {
         None
       })
       .unwrap_or_else(|| module.source_types(module_graph).iter().copied().collect())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::ChunkId;
+
+  #[test]
+  fn chunk_id_serialize_matches_runtime_numeric_rules() {
+    assert_eq!(simd_json::to_string(&ChunkId::from("903")).unwrap(), "903");
+    assert_eq!(
+      simd_json::to_string(&ChunkId::from("01")).unwrap(),
+      "\"01\""
+    );
+    assert_eq!(
+      simd_json::to_string(&ChunkId::from("main")).unwrap(),
+      "\"main\""
+    );
+    assert_eq!(
+      simd_json::to_string(&ChunkId::from("4294967295")).unwrap(),
+      "4294967295"
+    );
+    assert_eq!(
+      simd_json::to_string(&ChunkId::from("4294967296")).unwrap(),
+      "\"4294967296\""
+    );
+    assert_eq!(
+      simd_json::to_string(&vec![ChunkId::from("01"), ChunkId::from("903")]).unwrap(),
+      "[\"01\",903]"
+    );
   }
 }

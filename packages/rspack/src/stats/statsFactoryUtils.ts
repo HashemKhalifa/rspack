@@ -82,9 +82,9 @@ export type KnownStatsAsset = {
   related?: StatsAsset[];
   chunkNames?: (string | number)[];
   chunkIdHints?: (string | number)[];
-  chunks?: (string | null | undefined)[];
+  chunks?: (string | number | null | undefined)[];
   auxiliaryChunkNames?: (string | number)[];
-  auxiliaryChunks?: (string | null | undefined)[];
+  auxiliaryChunks?: (string | number | null | undefined)[];
   auxiliaryChunkIdHints?: (string | number)[];
   filteredRelated?: number;
   isOverSizeLimit?: boolean;
@@ -116,7 +116,7 @@ export type KnownStatsModule = {
   orphan?: boolean;
   id?: string | number | null;
   issuerId?: string | number | null;
-  chunks?: string[];
+  chunks?: (string | number)[];
   assets?: string[];
   dependent?: boolean;
   issuer?: string;
@@ -133,12 +133,6 @@ export type KnownStatsModule = {
   modules?: StatsModule[];
   filteredModules?: number;
   source?: string | Buffer;
-};
-
-export type KnownStatsProfile = {
-  total: number;
-  resolving: number;
-  building: number;
 };
 
 export type StatsModule = KnownStatsModule & Record<string, any>;
@@ -730,13 +724,4 @@ export const errorsSpaceLimit = (errors: StatsError[], max: number) => {
     errors: result,
     filtered,
   };
-};
-
-export const warningFromStatsWarning = (
-  warning: binding.JsStatsError,
-): Error => {
-  const res = new Error(warning.message);
-  res.name = warning.name || 'StatsWarning';
-  Object.assign(res, warning);
-  return res;
 };

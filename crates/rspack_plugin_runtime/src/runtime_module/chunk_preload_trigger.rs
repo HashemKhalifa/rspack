@@ -2,14 +2,15 @@ use std::sync::LazyLock;
 
 use rspack_cacheable::with::AsMap;
 use rspack_core::{
-  Compilation, IndexChunkIdMap, RuntimeGlobals, RuntimeModule, RuntimeModuleGenerateContext,
-  RuntimeModuleStage, RuntimeTemplate, chunk_graph_chunk::ChunkId, impl_runtime_module,
+  Compilation, IndexChunkIdMap, RuntimeModule, RuntimeModuleGenerateContext,
+  RuntimeModuleRuntimeRequirements, RuntimeModuleStage, RuntimeTemplate,
+  chunk_graph_chunk::ChunkId, impl_runtime_module,
 };
 
 use crate::extract_runtime_globals_from_ejs;
 
 static CHUNK_PRELOAD_TRIGGER_TEMPLATE: &str = include_str!("runtime/chunk_preload_trigger.ejs");
-static CHUNK_PRELOAD_TRIGGER_RUNTIME_REQUIREMENTS: LazyLock<RuntimeGlobals> =
+static CHUNK_PRELOAD_TRIGGER_RUNTIME_REQUIREMENTS: LazyLock<RuntimeModuleRuntimeRequirements> =
   LazyLock::new(|| extract_runtime_globals_from_ejs(CHUNK_PRELOAD_TRIGGER_TEMPLATE));
 
 #[impl_runtime_module]
@@ -29,7 +30,7 @@ impl ChunkPreloadTriggerRuntimeModule {
 impl RuntimeModule for ChunkPreloadTriggerRuntimeModule {
   fn template(&self) -> Vec<(String, String)> {
     vec![(
-      self.id.to_string(),
+      self.id().to_string(),
       CHUNK_PRELOAD_TRIGGER_TEMPLATE.to_string(),
     )]
   }
@@ -39,7 +40,7 @@ impl RuntimeModule for ChunkPreloadTriggerRuntimeModule {
     context: &RuntimeModuleGenerateContext<'_>,
   ) -> rspack_error::Result<String> {
     let source = context.runtime_template.render(
-      &self.id,
+      self.id(),
       Some(serde_json::json!({
         "_chunk_map": &self.chunk_map,
       })),
@@ -51,8 +52,13 @@ impl RuntimeModule for ChunkPreloadTriggerRuntimeModule {
   fn stage(&self) -> RuntimeModuleStage {
     RuntimeModuleStage::Trigger
   }
-
-  fn additional_runtime_requirements(&self, _compilation: &Compilation) -> RuntimeGlobals {
-    *CHUNK_PRELOAD_TRIGGER_RUNTIME_REQUIREMENTS
+  fn runtime_requirements(
+    &self,
+    _compilation: &Compilation,
+  ) -> rspack_core::RuntimeModuleRuntimeRequirements {
+    rspack_core::RuntimeModuleRuntimeRequirements {
+      dependencies: CHUNK_PRELOAD_TRIGGER_RUNTIME_REQUIREMENTS.dependencies,
+      ..Default::default()
+    }
   }
 }

@@ -1,3 +1,7 @@
+---
+description: '作为一个底层打包工具，Rspack 拥有丰富的技术生态，包含多种框架、工具和解决方案。这些生态项目涵盖了从框架到开发工具的各个方面，能够满足不同场景下的开发需求，提供开箱即用的体验。'
+---
+
 import { PackageManagerTabs } from '@theme';
 
 # 快速上手
@@ -27,6 +31,26 @@ Rspack 支持使用 [Node.js](https://nodejs.org/)、[Deno](https://deno.com/) �
 
 - Rspack v2 要求 Node.js 版本 20.19+, 22.12+。
 - Rspack v1 要求 Node.js 18.12.0 或更高版本。
+
+:::
+
+:::details 针对不支持的平台
+
+如果您正在使用小众平台，Rspack 可能没有提供原生支持。在这种情况下，请手动安装 `@rspack/binding-wasm32-wasi` 作为备用方案。Wasm 版本可以在大多数平台上运行。
+
+当前支持的平台：
+
+- `darwin-arm64`
+- `darwin-x64`
+- `linux-arm64-gnu`
+- `linux-arm64-musl`
+- `linux-riscv64-gnu`
+- `linux-riscv64-musl`
+- `linux-x64-gnu`
+- `linux-x64-musl`
+- `win32-arm64-msvc`
+- `win32-ia32-msvc`
+- `win32-x64-msvc`
 
 :::
 
@@ -103,7 +127,7 @@ npm init -y
 }
 ```
 
-接下来，查看 [配置 Rspack](/config/index) 来了解如何配置 Rspack。
+接下来，查看 [配置 Rspack](/config/) 来了解如何配置 Rspack。
 
 ## 从现有项目迁移
 

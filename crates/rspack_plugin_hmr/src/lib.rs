@@ -3,7 +3,7 @@ mod hot_module_replacement;
 use std::collections::hash_map;
 
 use hot_module_replacement::HotModuleReplacementRuntimeModule;
-use rspack_collections::{DatabaseItem, IdentifierSet};
+use rspack_collections::IdentifierSet;
 use rspack_core::{
   AssetInfo, Chunk, ChunkGraph, ChunkKind, ChunkUkey, Compilation,
   CompilationAdditionalTreeRuntimeRequirements, CompilationAsset, CompilationParams,
@@ -11,7 +11,7 @@ use rspack_core::{
   ModuleId, ModuleIdentifier, ModuleType, NormalModuleFactoryParser, NormalModuleLoader,
   ParserAndGenerator, ParserOptions, PathData, Plugin, RunnerContext, RuntimeGlobals,
   RuntimeModule, RuntimeModuleExt, RuntimeSpec,
-  chunk_graph_chunk::ChunkId,
+  chunk_graph_chunk::{ChunkId, ChunkIdSet},
   rspack_sources::{RawStringSource, SourceExt},
 };
 use rspack_error::{Diagnostic, Result};
@@ -56,16 +56,16 @@ async fn compilation(
 
 #[plugin_hook(CompilationProcessAssets for HotModuleReplacementPlugin, stage = Compilation::PROCESS_ASSETS_STAGE_ADDITIONAL)]
 async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
-  let Some(CompilationRecords {
+  let Some(records) = compilation.records.take() else {
+    return Ok(());
+  };
+  let CompilationRecords {
     chunks: old_chunks,
     runtimes: all_old_runtime,
     modules: old_all_modules,
     runtime_modules: old_runtime_modules,
     hash: old_hash,
-  }) = compilation.records.take()
-  else {
-    return Ok(());
-  };
+  } = records.as_ref();
 
   if let Some(old_hash) = &old_hash
     && let Some(hash) = &compilation.hash
@@ -85,7 +85,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
 
   let mut updated_runtime_modules: IdentifierSet = Default::default();
   let mut updated_chunks: HashMap<ChunkUkey, HashSet<String>> = Default::default();
-  for (identifier, old_runtime_module_hash) in &old_runtime_modules {
+  for (identifier, old_runtime_module_hash) in old_runtime_modules {
     if let Some(new_runtime_module_hash) = compilation.runtime_modules_hash.get(identifier) {
       // updated
       if new_runtime_module_hash != old_runtime_module_hash {
@@ -107,7 +107,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
     .collect();
   let mut completely_removed_modules: HashSet<ModuleId> = Default::default();
 
-  for (chunk_id, (old_runtime, old_module_ids)) in &old_chunks {
+  for (chunk_id, (old_runtime, old_module_ids)) in old_chunks {
     let mut remaining_modules: HashSet<ModuleId> = Default::default();
     for old_module_id in old_module_ids {
       if !all_module_ids.contains_key(old_module_id) {
@@ -134,7 +134,7 @@ async fn process_assets(&self, compilation: &mut Compilation) -> Result<()> {
     if let Some(current_chunk) = current_chunk {
       new_runtime = current_chunk
         .runtime()
-        .intersection(&all_old_runtime)
+        .intersection(all_old_runtime)
         .copied()
         .collect();
 
@@ -447,7 +447,7 @@ async fn normal_module_factory_parser(
     }
   } else if matches!(
     module_type,
-    ModuleType::Css | ModuleType::CssAuto | ModuleType::CssModule
+    ModuleType::Css | ModuleType::CssAuto | ModuleType::CssGlobal | ModuleType::CssModule
   ) && let Some(parser) = parser.downcast_mut::<CssParserAndGenerator>()
   {
     parser.hot = true;
@@ -499,7 +499,7 @@ impl Plugin for HotModuleReplacementPlugin {
 
 #[derive(Default)]
 struct HotUpdateContent {
-  updated_chunk_ids: HashSet<ChunkId>,
-  removed_chunk_ids: HashSet<ChunkId>,
+  updated_chunk_ids: ChunkIdSet,
+  removed_chunk_ids: ChunkIdSet,
   removed_modules: HashSet<ModuleId>,
 }

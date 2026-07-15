@@ -44,6 +44,7 @@ impl From<RawCrossOriginLoading> for CrossOriginLoading {
 #[napi(object)]
 pub struct RawEnvironment {
   pub r#const: bool,
+  pub computed_property: bool,
   pub method_shorthand: bool,
   pub arrow_function: bool,
   pub node_prefix_for_core_modules: bool,
@@ -56,6 +57,7 @@ pub struct RawEnvironment {
   pub global_this: bool,
   pub module: bool,
   pub optional_chaining: bool,
+  pub logical_assignment: bool,
   pub template_literal: bool,
   pub dynamic_import_in_worker: bool,
   pub import_meta_dirname_and_filename: bool,
@@ -65,6 +67,7 @@ impl From<RawEnvironment> for Environment {
   fn from(value: RawEnvironment) -> Self {
     Self {
       r#const: value.r#const,
+      computed_property: value.computed_property,
       method_shorthand: value.method_shorthand,
       arrow_function: value.arrow_function,
       node_prefix_for_core_modules: value.node_prefix_for_core_modules,
@@ -77,6 +80,7 @@ impl From<RawEnvironment> for Environment {
       global_this: value.global_this,
       module: value.module,
       optional_chaining: value.optional_chaining,
+      logical_assignment: value.logical_assignment,
       template_literal: value.template_literal,
       dynamic_import_in_worker: value.dynamic_import_in_worker,
       import_meta_dirname_and_filename: value.import_meta_dirname_and_filename,

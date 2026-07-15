@@ -70,8 +70,8 @@ export function createRunner(
     stats: cachedStats(context, name),
     name,
     testConfig: context.getTestConfig(),
-    source: context.getSource(),
-    dist: context.getDist(),
+    source: context.getCompileSource(),
+    dist: context.getCompileDist(),
     compilerOptions,
   };
   const isWeb = isWebTarget(compilerOptions);
@@ -133,8 +133,7 @@ export function createMultiCompilerRunner(
   const compilerOptions = multiCompilerOptions[index];
   const logs = context.getValue(DEBUG_SCOPES.RunLogs) as string[] | undefined;
   const errors = context.getValue(DEBUG_SCOPES.RunErrors) as
-    | Error[]
-    | undefined;
+    Error[] | undefined;
   let runner;
   const runnerOptions = {
     runInNewContext: false,
@@ -150,8 +149,8 @@ export function createMultiCompilerRunner(
     },
     name,
     testConfig: context.getTestConfig(),
-    source: context.getSource(),
-    dist: context.getDist(),
+    source: context.getCompileSource(),
+    dist: context.getCompileDist(),
     compilerOptions,
     logs,
     errors,

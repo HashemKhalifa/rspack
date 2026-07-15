@@ -1,3 +1,7 @@
+---
+description: '性能分析应基于包含调试信息的发布版本进行。这种方法既能确保性能结果的准确性，又能提供充足的调试信息用于分析。'
+---
+
 # Profiling
 
 在本节中，我们将探讨如何分析 Rspack Profile 以识别性能瓶颈。
@@ -72,7 +76,7 @@ Rspack 的 Rust 代码通常执行在 tokio 线程里，选择 tokio 线程就�
 
 ![image](https://assets.rspack.rs/others/assets/rsdoctor/rsdoctor-loader-timeline.png)
 
-参考 [Rsdoctor Compilation Analysis](/guide/optimization/profile#rsdoctor-%E7%9A%84%E7%BC%96%E8%AF%91%E5%88%86%E6%9E%90)
+参考 [Rsdoctor Compilation Analysis](/guide/optimization/profile#使用-rsdoctor-分析)
 
 ## Mac Xcode instruments
 

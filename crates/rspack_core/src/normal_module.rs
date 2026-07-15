@@ -1,6 +1,5 @@
 use std::{
   borrow::Cow,
-  hash::Hash,
   sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -10,22 +9,19 @@ use std::{
 use derive_more::Debug;
 use rspack_cacheable::{
   cacheable, cacheable_dyn,
-  with::{As, AsOption, AsPreset},
+  with::{As, AsInner, AsOption, AsPreset},
 };
 use rspack_collections::{Identifiable, IdentifierMap, IdentifierSet};
 use rspack_error::{Diagnosable, Diagnostic, Result, error};
 use rspack_fs::ReadableFileSystem;
-use rspack_hash::{RspackHash, RspackHashDigest};
+use rspack_hash::{RspackHash, RspackHashDigest, RspackHasher};
 use rspack_hook::define_hook;
 use rspack_loader_runner::{AdditionalData, Content, LoaderContext, ResourceData, run_loaders};
 use rspack_sources::{
   BoxSource, CachedSource, OriginalSource, RawBufferSource, RawStringSource, SourceExt, SourceMap,
   SourceMapSource, WithoutOriginalOptions,
 };
-use rspack_util::{
-  ext::DynHash,
-  source_map::{ModuleSourceMapConfig, SourceMapKind},
-};
+use rspack_util::source_map::{ModuleSourceMapConfig, SourceMapKind};
 use serde_json::json;
 use tracing::{Instrument, info_span};
 
@@ -33,13 +29,14 @@ use crate::{
   AsyncDependenciesBlockIdentifier, BoxDependencyTemplate, BoxLoader, BoxModule,
   BoxModuleDependency, BuildContext, BuildInfo, BuildMeta, BuildResult, ChunkGraph,
   CodeGenerationResult, Compilation, ConnectionState, Context, DependenciesBlock, DependencyId,
-  FactoryMeta, GenerateContext, GeneratorOptions, LibIdentOptions, Module,
+  FactoryMeta, GenerateContext, GeneratorOptions, ImportPhase, LibIdentOptions, Module,
   ModuleCodeGenerationContext, ModuleGraph, ModuleGraphCacheArtifact, ModuleIdentifier,
   ModuleLayer, ModuleType, OptimizationBailoutItem, OutputOptions, ParseContext, ParseResult,
-  ParserAndGenerator, ParserOptions, Resolve, RspackLoaderRunnerPlugin, RunnerContext,
-  RuntimeGlobals, RuntimeSpec, SourceType, contextify,
+  ParserAndGenerator, ParserOptions, Resolve, ResolvedModuleOptions, RspackLoaderRunnerPlugin,
+  RunnerContext, RuntimeGlobals, RuntimeSpec, SideEffectsStateArtifact, SourceType, contextify,
   diagnostics::ModuleBuildError,
-  get_context, module_update_hash,
+  get_context, module_analyzed_side_effect_free, module_declared_side_effect_free,
+  module_update_hash,
   utils::{SourceSizeCache, SourceSizeCacheSerde},
 };
 
@@ -129,10 +126,9 @@ pub struct NormalModule {
 
   /// Resolve options derived from [Rule.resolve]
   resolve_options: Option<Arc<Resolve>>,
-  /// Parser options derived from [Rule.parser]
-  parser_options: Option<ParserOptions>,
-  /// Generator options derived from [Rule.generator]
-  generator_options: Option<GeneratorOptions>,
+  /// Parser and generator options derived from [Rule.parser] and [Rule.generator]
+  #[cacheable(with=AsInner)]
+  parser_and_generator_options: Arc<ResolvedModuleOptions>,
   /// enable/disable extracting source map
   extract_source_map: Option<bool>,
 
@@ -160,8 +156,16 @@ impl NormalModule {
     module_type: &ModuleType,
     layer: Option<&ModuleLayer>,
     request: &'request str,
+    phase: ImportPhase,
   ) -> Cow<'request, str> {
-    if let Some(layer) = layer {
+    if matches!(module_type, ModuleType::WasmAsync) {
+      let mut id = format!("{module_type}|{request}|{}", phase.as_str());
+      if let Some(layer) = layer {
+        id.push('|');
+        id.push_str(layer);
+      }
+      id.into()
+    } else if let Some(layer) = layer {
       format!("{module_type}|{request}|{layer}").into()
     } else if *module_type == ModuleType::JsAuto {
       request.into()
@@ -178,17 +182,21 @@ impl NormalModule {
     module_type: impl Into<ModuleType>,
     layer: Option<ModuleLayer>,
     parser_and_generator: Box<dyn ParserAndGenerator>,
-    parser_options: Option<ParserOptions>,
-    generator_options: Option<GeneratorOptions>,
+    parser_and_generator_options: Arc<ResolvedModuleOptions>,
     match_resource: Option<ResourceData>,
     resource_data: Arc<ResourceData>,
     resolve_options: Option<Arc<Resolve>>,
     loaders: Vec<BoxLoader>,
     context: Option<Context>,
     extract_source_map: Option<bool>,
+    import_phase: ImportPhase,
   ) -> Self {
     let module_type = module_type.into();
-    let id = Self::create_id(&module_type, layer.as_ref(), &request);
+    let id = Self::create_id(&module_type, layer.as_ref(), &request, import_phase);
+    let build_info = BuildInfo {
+      import_phase,
+      ..Default::default()
+    };
     Self {
       blocks: Vec::new(),
       dependencies: Vec::new(),
@@ -200,8 +208,7 @@ impl NormalModule {
       module_type,
       layer,
       parser_and_generator,
-      parser_options,
-      generator_options,
+      parser_and_generator_options,
       match_resource,
       resource_data,
       resolve_options,
@@ -215,7 +222,7 @@ impl NormalModule {
       code_generation_dependencies: None,
       presentational_dependencies: None,
       factory_meta: None,
-      build_info: Default::default(),
+      build_info,
       build_meta: Default::default(),
       parsed: false,
       source_map_kind: SourceMapKind::empty(),
@@ -262,6 +269,10 @@ impl NormalModule {
     &*self.parser_and_generator
   }
 
+  pub fn parser_and_generator_mut(&mut self) -> &mut dyn ParserAndGenerator {
+    &mut *self.parser_and_generator
+  }
+
   pub fn code_generation_dependencies(&self) -> &Option<Vec<BoxModuleDependency>> {
     &self.code_generation_dependencies
   }
@@ -280,12 +291,12 @@ impl NormalModule {
     output_options: &OutputOptions,
     build_meta: &BuildMeta,
   ) -> RspackHashDigest {
-    let mut hasher = RspackHash::from(output_options);
+    let mut hasher = RspackHasher::from(output_options);
     "source".hash(&mut hasher);
     if let Some(error) = self.first_error() {
       error.message.hash(&mut hasher);
     } else if let Some(s) = &self.source {
-      s.hash(&mut hasher);
+      std::hash::Hash::hash(s, &mut hasher);
     }
     "meta".hash(&mut hasher);
     build_meta.hash(&mut hasher);
@@ -293,11 +304,11 @@ impl NormalModule {
   }
 
   pub fn get_parser_options(&self) -> Option<&ParserOptions> {
-    self.parser_options.as_ref()
+    self.parser_and_generator_options.parser_options()
   }
 
   pub fn get_generator_options(&self) -> Option<&GeneratorOptions> {
-    self.generator_options.as_ref()
+    self.parser_and_generator_options.generator_options()
   }
 }
 
@@ -475,8 +486,7 @@ impl Module for NormalModule {
     self.add_diagnostics(loader_result.diagnostics);
 
     let is_binary = self
-      .generator_options
-      .as_ref()
+      .get_generator_options()
       .and_then(|g| match g {
         GeneratorOptions::Asset(g) => g.binary,
         GeneratorOptions::AssetInline(g) => g.binary,
@@ -490,7 +500,10 @@ impl Module for NormalModule {
     } else {
       Content::String(loader_result.content.into_string_lossy())
     };
-    let source = self.create_source(content, loader_result.source_map)?;
+    let source = self.create_source(
+      content,
+      loader_result.source_map.map(|source_map| *source_map),
+    )?;
 
     self.build_info.cacheable = loader_result.cacheable;
     self.build_info.file_dependencies = loader_result
@@ -547,7 +560,8 @@ impl Module for NormalModule {
         source: source.clone(),
         module_context: &self.context,
         module_identifier: self.id,
-        module_parser_options: self.parser_options.as_ref(),
+        module_parser_options: self.parser_and_generator_options.parser_options(),
+        module_generator_options: self.parser_and_generator_options.generator_options(),
         module_type: &self.module_type,
         module_layer: self.layer.as_ref(),
         module_user_request: &self.user_request,
@@ -645,6 +659,7 @@ impl Module for NormalModule {
 
     let module_graph = compilation.get_module_graph();
     for source_type in self.source_types(module_graph) {
+      let in_concatenation = concatenation_scope.is_some();
       let generation_result = self
         .parser_and_generator
         .generate(
@@ -655,12 +670,18 @@ impl Module for NormalModule {
             runtime_template,
             data: &mut code_generation_result.data,
             requested_source_type: *source_type,
+            module_parser_options: self.parser_and_generator_options.parser_options(),
+            module_generator_options: self.parser_and_generator_options.generator_options(),
             runtime: *runtime,
             concatenation_scope: concatenation_scope.as_mut(),
           },
         )
         .await?;
-      code_generation_result.add(*source_type, CachedSource::new(generation_result).boxed());
+      if in_concatenation {
+        code_generation_result.add(*source_type, generation_result);
+      } else {
+        code_generation_result.add(*source_type, CachedSource::new(generation_result).boxed());
+      }
     }
     code_generation_result.concatenation_scope = std::mem::take(concatenation_scope);
     Ok(code_generation_result)
@@ -671,15 +692,15 @@ impl Module for NormalModule {
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
   ) -> Result<RspackHashDigest> {
-    let mut hasher = RspackHash::from(&compilation.options.output);
-    self.build_info.hash.dyn_hash(&mut hasher);
+    let mut hasher = RspackHasher::from(&compilation.options.output);
+    self.build_info.hash.hash(&mut hasher);
     // For built failed NormalModule, hash will be calculated by build_info.hash, which contains error message
-    if self.source.is_some() {
-      self
+    if self.source.is_some() && self.parser_and_generator.has_runtime_hash() {
+      let runtime_hash = self
         .parser_and_generator
         .get_runtime_hash(self, compilation, runtime)
-        .await?
-        .dyn_hash(&mut hasher);
+        .await?;
+      runtime_hash.hash(&mut hasher);
     }
     module_update_hash(self, &mut hasher, compilation, runtime);
     Ok(hasher.digest(&compilation.options.output.hash_digest))
@@ -747,6 +768,7 @@ impl Module for NormalModule {
     &self,
     module_graph: &ModuleGraph,
     module_graph_cache: &ModuleGraphCacheArtifact,
+    side_effects_state_artifact: &SideEffectsStateArtifact,
     module_chain: &mut IdentifierSet,
     connection_state_cache: &mut IdentifierMap<ConnectionState>,
   ) -> ConnectionState {
@@ -755,10 +777,11 @@ impl Module for NormalModule {
         return *state;
       }
 
-      if let Some(side_effect_free) = self.factory_meta().and_then(|m| m.side_effect_free) {
+      if let Some(side_effect_free) = module_declared_side_effect_free(self) {
         return ConnectionState::Active(!side_effect_free);
       }
-      if Some(true) == self.build_meta().side_effect_free {
+
+      if module_analyzed_side_effect_free(self, side_effects_state_artifact) == Some(true) {
         // use module chain instead of is_evaluating_side_effects to mut module graph
         if module_chain.contains(&self.identifier()) {
           return ConnectionState::CircularConnection;
@@ -770,6 +793,7 @@ impl Module for NormalModule {
           let state = dependency.get_module_evaluation_side_effects_state(
             module_graph,
             module_graph_cache,
+            side_effects_state_artifact,
             module_chain,
             connection_state_cache,
           );
@@ -850,7 +874,11 @@ impl Diagnosable for NormalModule {
 }
 
 impl NormalModule {
-  fn create_source(&self, content: Content, source_map: Option<SourceMap>) -> Result<BoxSource> {
+  fn create_source(
+    &self,
+    content: Content,
+    source_map: Option<SourceMap<'static>>,
+  ) -> Result<BoxSource> {
     if content.is_buffer() {
       return Ok(RawBufferSource::from(content.into_bytes()).boxed());
     }

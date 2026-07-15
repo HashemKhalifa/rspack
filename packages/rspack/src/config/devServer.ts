@@ -10,7 +10,7 @@
 import type { ReadStream } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ServerOptions } from 'node:https';
-import type { Server as ConnectApplication, NextFunction } from 'connect-next';
+import type { NextFunction } from 'connect-next';
 import type {
   Filter as ProxyFilter,
   Options as ProxyOptions,
@@ -141,10 +141,7 @@ export type DevServerStaticItem = {
 };
 
 export type DevServerStatic =
-  | string
-  | boolean
-  | DevServerStaticItem
-  | (string | DevServerStaticItem)[];
+  string | boolean | DevServerStaticItem | (string | DevServerStaticItem)[];
 
 type ServerType<A extends BasicApplication, S extends BasicServer> =
   | LiteralUnion<'http' | 'https' | 'http2', string>
@@ -248,7 +245,7 @@ export type DevServerClient = {
 };
 
 export type DevServerOptions<
-  A extends BasicApplication = ConnectApplication,
+  A extends BasicApplication = BasicApplication,
   S extends BasicServer = BasicServer,
 > = {
   ipc?: string | boolean;
@@ -265,15 +262,10 @@ export type DevServerOptions<
   server?: ServerType<A, S> | ServerConfiguration<A, S>;
   app?: () => Promise<A>;
   webSocketServer?:
-    | boolean
-    | LiteralUnion<'ws', string>
-    | WebSocketServerConfiguration;
+    boolean | LiteralUnion<'ws', string> | WebSocketServerConfiguration;
   proxy?: DevServerProxyConfigArray;
   open?:
-    | string
-    | boolean
-    | DevServerOpenOptions
-    | (string | DevServerOpenOptions)[];
+    string | boolean | DevServerOpenOptions | (string | DevServerOpenOptions)[];
   setupExitSignals?: boolean;
   client?: boolean | DevServerClient;
   headers?:

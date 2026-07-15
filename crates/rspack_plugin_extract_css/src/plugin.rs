@@ -1,13 +1,12 @@
 use std::{
   borrow::Cow,
-  hash::Hash,
   sync::{Arc, LazyLock},
 };
 
 use cow_utils::CowUtils;
 use regex::Regex;
 use rspack_cacheable::cacheable;
-use rspack_collections::{DatabaseItem, IdentifierMap, IdentifierSet};
+use rspack_collections::{IdentifierMap, IdentifierSet};
 use rspack_core::{
   AssetInfo, Chunk, ChunkGraph, ChunkGroupUkey, ChunkKind, ChunkUkey, Compilation,
   CompilationContentHash, CompilationParams, CompilationRenderManifest,
@@ -21,7 +20,7 @@ use rspack_core::{
   },
 };
 use rspack_error::{Diagnostic, Result};
-use rspack_hash::RspackHash;
+use rspack_hash::{RspackHash, RspackHasher};
 use rspack_hook::{plugin, plugin_hook};
 use rspack_plugin_javascript::{
   BoxJavascriptParserPlugin, parser_and_generator::JavaScriptParserAndGenerator,
@@ -199,7 +198,7 @@ impl PluginCssExtract {
 
         sorted_module
       })
-      .collect::<Vec<Vec<(ModuleIdentifier, usize)>>>();
+      .collect::<Vec<Vec<(ModuleIdentifier, u32)>>>();
 
     let mut used_modules: IdentifierSet = Default::default();
     let mut result: Vec<&dyn Module> = Default::default();
@@ -485,7 +484,7 @@ despite it was not able to fulfill desired ordering with these modules:
           source.add(SourceMapSource::new(WithoutOriginalOptions {
             value: content.to_string(),
             name: readable_identifier,
-            source_map: SourceMap::from_json(source_map).expect("invalid sourcemap"),
+            source_map: SourceMap::from_json(source_map.clone()).expect("invalid sourcemap"),
           }))
         } else {
           source.add(RawStringSource::from(content.to_string()));
@@ -527,9 +526,9 @@ async fn runtime_requirement_in_tree(
   &self,
   compilation: &Compilation,
   chunk_ukey: &ChunkUkey,
-  _all_runtime_requirements: &RuntimeGlobals,
+  all_runtime_requirements: &RuntimeGlobals,
   runtime_requirements: &RuntimeGlobals,
-  _runtime_requirements_mut: &mut RuntimeGlobals,
+  runtime_requirements_mut: &mut RuntimeGlobals,
   runtime_modules_to_add: &mut Vec<(ChunkUkey, Box<dyn RuntimeModule>)>,
 ) -> Result<Option<()>> {
   // different from webpack, Rspack can invoke this multiple times,
@@ -547,9 +546,10 @@ async fn runtime_requirement_in_tree(
   let has_hot_update = runtime_requirements.contains(RuntimeGlobals::HMR_DOWNLOAD_UPDATE_HANDLERS);
 
   if has_hot_update || runtime_requirements.contains(RuntimeGlobals::ENSURE_CHUNK_HANDLERS) {
-    let runtime_template = compilation.runtime_template.create_runtime_code_template();
     let filename = self.options.filename.clone();
     let chunk_filename = self.options.chunk_filename.clone();
+    let runtime_template = compilation.runtime_template.create_chunk_code_template();
+    let global = format!("{}.miniCssF", runtime_template.render_runtime_argument());
 
     runtime_modules_to_add.push((
       *chunk_ukey,
@@ -558,10 +558,7 @@ async fn runtime_requirement_in_tree(
         "css",
         "mini-css",
         SOURCE_TYPE[0],
-        format!(
-          "{}.miniCssF",
-          runtime_template.render_runtime_globals(&RuntimeGlobals::REQUIRE)
-        ),
+        global,
         move |runtime_requirements| {
           runtime_requirements.contains(RuntimeGlobals::HMR_DOWNLOAD_UPDATE_HANDLERS)
         },
@@ -589,6 +586,10 @@ async fn runtime_requirement_in_tree(
         self.options.insert.clone(),
       )),
     ));
+
+    runtime_requirements_mut.extend(CssLoadingRuntimeModule::get_runtime_requirements(
+      all_runtime_requirements,
+    ));
   }
 
   Ok(None)
@@ -599,7 +600,7 @@ async fn content_hash(
   &self,
   compilation: &Compilation,
   chunk_ukey: &ChunkUkey,
-  hashes: &mut FxHashMap<SourceType, RspackHash>,
+  hashes: &mut FxHashMap<SourceType, RspackHasher>,
 ) -> Result<()> {
   let module_graph = compilation.get_module_graph();
 
@@ -621,7 +622,7 @@ async fn content_hash(
 
   let hasher = hashes
     .entry(SOURCE_TYPE[0])
-    .or_insert_with(|| RspackHash::from(&compilation.options.output));
+    .or_insert_with(|| RspackHasher::from(&compilation.options.output));
 
   used_modules
     .iter()
@@ -678,6 +679,7 @@ async fn render_manifest(
     .get_path_with_info(
       filename_template,
       PathData::default()
+        .chunk(*chunk_ukey, compilation)
         .chunk_id_optional(chunk.id().map(|id| id.as_str()))
         .chunk_hash_optional(chunk.rendered_hash(
           &compilation.chunk_hashes_artifact,

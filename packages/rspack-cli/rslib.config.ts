@@ -6,9 +6,22 @@ export default defineConfig({
     {
       format: 'esm',
       syntax: ['es2023'],
-      dts: true,
+      dts: {
+        bundle: true,
+        tsgo: true,
+      },
     },
   ],
+  output: {
+    externals: [
+      ({ request }, callback) => {
+        if (request === 'jiti') {
+          return callback(undefined, '../compiled/jiti/index.js');
+        }
+        return callback();
+      },
+    ],
+  },
   source: {
     tsconfigPath: './tsconfig.build.json',
     define: {

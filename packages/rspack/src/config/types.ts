@@ -16,8 +16,7 @@ export type LiteralUnion<T extends U, U> = T | (U & Record<never, never>);
 export type FilenameTemplate = string;
 
 export type Filename =
-  | FilenameTemplate
-  | ((pathData: PathData, assetInfo?: AssetInfo) => string);
+  FilenameTemplate | ((pathData: PathData, assetInfo?: AssetInfo) => string);
 
 //#region Name
 /** Name of the configuration. Used when loading multiple configurations. */
@@ -52,8 +51,7 @@ export type Falsy = false | '' | 0 | null | undefined;
 //#region Entry
 /** The publicPath of the resource referenced by this entry. */
 export type PublicPath =
-  | LiteralUnion<'auto', string>
-  | Exclude<Filename, string>;
+  LiteralUnion<'auto', string> | Exclude<Filename, string>;
 
 /** The baseURI of the resource referenced by this entry. */
 export type BaseUri = string;
@@ -71,10 +69,7 @@ export type ChunkLoading = false | ChunkLoadingType;
 export type AsyncChunks = boolean;
 
 /** Option to set the method of loading WebAssembly Modules. */
-export type WasmLoadingType = LiteralUnion<
-  'fetch-streaming' | 'fetch' | 'async-node',
-  string
->;
+export type WasmLoadingType = 'fetch' | 'async-node' | 'universal';
 
 /** Option to set the method of loading WebAssembly Modules. */
 export type WasmLoading = false | WasmLoadingType;
@@ -251,7 +246,7 @@ export type Entry = EntryStatic | EntryDynamic;
 //#endregion
 
 //#region Output
-/** The output directory as an absolute path. */
+/** The output directory. Relative paths are resolved against `context`. */
 export type Path = string;
 
 /** Tells Rspack to include comments in bundles with information about the contained modules. */
@@ -295,8 +290,7 @@ export type EnabledLibraryTypes = string[];
 
 /** Whether delete all files in the output directory. */
 export type Clean =
-  | boolean
-  | { keep?: string | RegExp | ((path: string) => boolean) };
+  boolean | { keep?: string | RegExp | ((path: string) => boolean) };
 
 /** Output JavaScript files as module type. */
 export type OutputModule = boolean;
@@ -304,14 +298,14 @@ export type OutputModule = boolean;
 /** Tell Rspack to remove a module from the module instance cache (require.cache) if it throws an exception when it is required. */
 export type StrictModuleExceptionHandling = boolean;
 
-/** Handle error in module loading as per EcmaScript Modules spec at a performance cost. */
+/** Handle error in module loading as per ECMAScript Modules spec at a performance cost. */
 export type StrictModuleErrorHandling = boolean;
 
 /** Indicates what global object will be used to mount the library. */
 export type GlobalObject = string;
 
 /** List of wasm loading types enabled for use by entry points. */
-export type EnabledWasmLoadingTypes = string[];
+export type EnabledWasmLoadingTypes = ('...' | WasmLoadingType)[];
 
 /** The name of the native import() function. */
 export type ImportFunctionName = string;
@@ -334,7 +328,7 @@ export type WorkerPublicPath = string;
 /** Controls [Trusted Types](https://web.dev/articles/trusted-types) compatibility. */
 export type TrustedTypes = {
   /**
-   * The name of the Trusted Types policy created by webpack to serve bundle chunks.
+   * The name of the Trusted Types policy created by Rspack to serve bundle chunks.
    */
   policyName?: string;
   /**
@@ -388,8 +382,7 @@ export interface ModuleFilenameTemplateContext {
 
 /** This option is only used when devtool uses an option that requires module names. */
 export type DevtoolModuleFilenameTemplate =
-  | string
-  | ((context: ModuleFilenameTemplateContext) => string);
+  string | ((context: ModuleFilenameTemplateContext) => string);
 
 /** A fallback is used when the template string or function above yields duplicates. */
 export type DevtoolFallbackModuleFilenameTemplate =
@@ -409,13 +402,16 @@ export type Environment = {
   /** The environment supports const and let for variable declarations. */
   const?: boolean;
 
+  /** The environment supports computed property names in object literals ('{ [expr]: value }'). */
+  computedProperty?: boolean;
+
   /** The environment supports destructuring ('{ a, b } = obj'). */
   destructuring?: boolean;
 
   /** The environment supports 'document' variable. */
   document?: boolean;
 
-  /** The environment supports an async import() function to import EcmaScript modules. */
+  /** The environment supports an async import() function to import ECMAScript modules. */
   dynamicImport?: boolean;
 
   /** The environment supports an async import() when creating a worker, only for web targets at the moment. */
@@ -438,12 +434,15 @@ export type Environment = {
 
   /**
    * Determines if the node: prefix is generated for core module imports in environments that support it.
-   * This is only applicable to Webpack runtime code.
+   * This is only applicable to Rspack runtime code.
    * */
   nodePrefixForCoreModules?: boolean;
 
   /** The environment supports optional chaining ('obj?.a' or 'obj?.()'). */
   optionalChaining?: boolean;
+
+  /** The environment supports logical assignment ('a ||= b'). */
+  logicalAssignment?: boolean;
 
   /** The environment supports template literals. */
   templateLiteral?: boolean;
@@ -451,7 +450,7 @@ export type Environment = {
 
 export type Output = {
   /**
-   * The output directory as an absolute path.
+   * The output directory. Relative paths are resolved against `context`.
    * @default path.resolve(process.cwd(), 'dist')
    * */
   path?: Path;
@@ -545,7 +544,7 @@ export type Output = {
   strictModuleExceptionHandling?: StrictModuleExceptionHandling;
 
   /**
-   * Handle error in module loading as per EcmaScript Modules spec at a performance cost.
+   * Handle error in module loading as per ECMAScript Modules spec at a performance cost.
    * @default false
    * */
   strictModuleErrorHandling?: StrictModuleErrorHandling;
@@ -830,8 +829,6 @@ export type ResolveOptions = {
   byDependency?: Record<string, ResolveOptions>;
   /** enable Yarn PnP */
   pnp?: boolean;
-  /** Path to PnP manifest file */
-  pnpManifest?: string | false;
 };
 
 /** Used to configure the Rspack module resolution */
@@ -859,6 +856,10 @@ export type RuleSetLoader = string;
 export type RuleSetLoaderOptions = string | Record<string, any>;
 
 export type RuleSetLoaderWithOptions = {
+  /**
+   * Stable identifier used to reference object-form loader options.
+   * When provided, Rspack passes object options to the loader request as `??${ident}`.
+   */
   ident?: string;
 
   loader: RuleSetLoader;
@@ -884,8 +885,40 @@ export type RuleSetUse =
   | RuleSetUseItem[]
   | ((data: RawFuncUseCtx) => RuleSetUseItem[]);
 
+export type RuleSetRuleUseAndLoader =
+  | {
+      /** A loader name */
+      loader: RuleSetLoader;
+
+      /** A loader options */
+      options?: RuleSetLoaderOptions;
+
+      /** An array to pass the Loader package name and its options. */
+      use?: never;
+    }
+  | {
+      /** A loader name */
+      loader?: never;
+
+      /** A loader options */
+      options?: never;
+
+      /** An array to pass the Loader package name and its options. */
+      use: RuleSetUse;
+    }
+  | {
+      /** A loader name */
+      loader?: never;
+
+      /** A loader options */
+      options?: never;
+
+      /** An array to pass the Loader package name and its options. */
+      use?: never;
+    };
+
 /** Rule defines the conditions for matching a module and the behavior of handling those modules. */
-export type RuleSetRule = {
+export type RuleSetRule = RuleSetRuleUseAndLoader & {
   /** Matches all modules that match this resource, and will match against Resource. */
   test?: RuleSetCondition;
 
@@ -903,6 +936,9 @@ export type RuleSetRule = {
 
   /** Matches all modules that match this resource, and will match against the category of the dependency that introduced the current module */
   dependency?: RuleSetCondition;
+
+  /** Matches all modules by the import phase that introduced the current module. */
+  phase?: RuleSetCondition;
 
   /** Matches all modules that match this resource, and will match against Resource */
   resource?: RuleSetCondition;
@@ -930,15 +966,6 @@ export type RuleSetRule = {
 
   /** Used to mark the layer of the matching module. */
   layer?: string;
-
-  /** A loader name */
-  loader?: RuleSetLoader;
-
-  /** A loader options */
-  options?: RuleSetLoaderOptions;
-
-  /** An array to pass the Loader package name and its options.  */
-  use?: RuleSetUse;
 
   /**
    * Parser options for the specific modules that matched by the rule conditions
@@ -999,6 +1026,7 @@ export type AssetParserOptions = {
 
 export type CssParserNamedExports = boolean;
 export type CssParserUrl = boolean;
+export type CssParserExportType = 'link' | 'text' | 'css-style-sheet' | 'style';
 
 export type CssParserResolveImportContext = {
   url: string;
@@ -1009,12 +1037,20 @@ export type CssParserResolveImportContext = {
 };
 
 export type CssParserResolveImport =
-  | boolean
-  | ((context: CssParserResolveImportContext) => boolean);
+  boolean | ((context: CssParserResolveImportContext) => boolean);
 
 /** Options object for `css` modules. */
 export type CssParserOptions = {
   /**
+   * Configure how CSS content is exported to JavaScript.
+   *
+   * The default value is `"link"`, which emits CSS as stylesheet output.
+   *
+   * @default "link"
+   */
+  exportType?: CssParserExportType;
+
+  /**
    * Use ES modules named export for CSS exports.
    * @default true
    * */
@@ -1030,22 +1066,7 @@ export type CssParserOptions = {
    * Allow to enable/disables `@import` at-rules handling.
    * @default true
    * */
-  resolveImport?: CssParserResolveImport;
-};
-
-/** Options object for `css/auto` modules. */
-export type CssAutoParserOptions = {
-  /**
-   * Use ES modules named export for CSS exports.
-   * @default true
-   * */
-  namedExports?: CssParserNamedExports;
-
-  /**
-   * Allow to enable/disables handling the CSS functions url.
-   * @default true
-   * */
-  url?: CssParserUrl;
+  import?: boolean;
 
   /**
    * Allow to enable/disables `@import` at-rules handling.
@@ -1054,9 +1075,18 @@ export type CssAutoParserOptions = {
   resolveImport?: CssParserResolveImport;
 };
 
-/** Options object for `css/module` modules. */
+/** Options object for `css/global` modules. */
 export type CssModuleParserOptions = {
   /**
+   * Configure how CSS content is exported to JavaScript.
+   *
+   * The default value is `"link"`, which emits CSS as stylesheet output.
+   *
+   * @default "link"
+   */
+  exportType?: CssParserExportType;
+
+  /**
    * Use ES modules named export for CSS exports.
    * @default true
    * */
@@ -1072,7 +1102,58 @@ export type CssModuleParserOptions = {
    * Allow to enable/disables `@import` at-rules handling.
    * @default true
    * */
+  import?: boolean;
+
+  /**
+   * Allow to filter handling of `@import` at-rules.
+   * @default true
+   * */
   resolveImport?: CssParserResolveImport;
+
+  /**
+   * Enable/disable renaming of `@keyframes`.
+   * @default true
+   */
+  animation?: boolean;
+
+  /**
+   * Enable/disable renaming of container names.
+   * @default true
+   */
+  container?: boolean;
+
+  /**
+   * Enable/disable renaming of custom identifiers.
+   * @default true
+   */
+  customIdents?: boolean;
+
+  /**
+   * Enable/disable renaming of dashed identifiers, e.g. custom properties.
+   * @default true
+   */
+  dashedIdents?: boolean;
+
+  /**
+   * Enable/disable renaming of CSS function names.
+   * @default true
+   */
+  function?: boolean;
+
+  /**
+   * Enable/disable renaming of grid names.
+   * @default true
+   */
+  grid?: boolean;
+};
+
+/** Options object for `css/auto` and `css/module` modules. */
+export type CssAutoOrModuleParserOptions = CssModuleParserOptions & {
+  /**
+   * Enable strict pure mode: every selector must contain at least one local class or id selector.
+   * @default false
+   */
+  pure?: boolean;
 };
 
 type ExportsPresence = 'error' | 'warn' | 'auto' | false;
@@ -1085,6 +1166,114 @@ export type JavascriptParserCommonjsOption =
       /** Controls how CommonJS export mutations are handled. */
       exports?: JavascriptParserCommonjsExports;
     };
+
+export type JavascriptParserWorkerOptions =
+  | boolean
+  | string[]
+  | {
+      /** Provide custom syntax for Worker parsing, commonly used to support Worklet */
+      alias?: string[];
+
+      /**
+       * Controls how Worker URLs are generated.
+       * Set to 'new-url-relative' to emit a static new URL(..., import.meta.url) expression.
+       */
+      url?: 'new-url-relative';
+    };
+
+export type ImportMetaParserOptions = {
+  [property: string]: boolean | undefined;
+
+  /**
+   * Enable/disable evaluating import.meta.dirname.
+   */
+  dirname?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.filename.
+   */
+  filename?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.glob.
+   */
+  glob?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.main.
+   */
+  main?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.resolve.
+   */
+  resolve?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.rspackBaseUri.
+   */
+  rspackBaseUri?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.rspackHash.
+   */
+  rspackHash?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.rspackInitSharing.
+   */
+  rspackInitSharing?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.rspackNonce.
+   */
+  rspackNonce?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.rspackPublicPath.
+   */
+  rspackPublicPath?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.rspackRsc.
+   */
+  rspackRsc?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.rspackShareScopes.
+   */
+  rspackShareScopes?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.rspackUniqueId.
+   */
+  rspackUniqueId?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.rspackVersion.
+   */
+  rspackVersion?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.url.
+   */
+  url?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.webpack.
+   */
+  webpack?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.webpackContext.
+   */
+  webpackContext?: boolean;
+
+  /**
+   * Enable/disable evaluating import.meta.webpackHot.
+   */
+  webpackHot?: boolean;
+};
 
 export type JavascriptParserOptions = {
   /**
@@ -1112,10 +1301,9 @@ export type JavascriptParserOptions = {
   dynamicImportFetchPriority?: 'low' | 'high' | 'auto';
 
   /**
-   * Enable or disable evaluating import.meta. Set to 'preserve-unknown' to preserve unknown properties for runtime evaluation.
-   * @default 'preserve-unknown'
+   * Enable or disable evaluating import.meta. Set to 'preserve-unknown' or use an object to preserve unknown properties for runtime evaluation.
    */
-  importMeta?: boolean | 'preserve-unknown';
+  importMeta?: boolean | 'preserve-unknown' | ImportMetaParserOptions;
 
   /**
    * Enable parsing of new URL() syntax.
@@ -1161,8 +1349,8 @@ export type JavascriptParserOptions = {
   /** Handle the this context correctly according to the spec for namespace objects. */
   strictThisContextOnImports?: boolean;
 
-  /** Provide custom syntax for Worker parsing, commonly used to support Worklet */
-  worker?: string[] | boolean;
+  /** Configure Worker parsing and URL generation. */
+  worker?: JavascriptParserWorkerOptions;
 
   /** Override the module to strict or non-strict. */
   overrideStrict?: 'strict' | 'non-strict';
@@ -1208,6 +1396,12 @@ export type JavascriptParserOptions = {
    */
   commonjsMagicComments?: boolean;
 
+  /**
+   * Enable or disable parsing `import { createRequire } from "module"` and evaluating createRequire().
+   * @default false
+   */
+  createRequire?: boolean | string;
+
   /** Whether to tolerant exportsPresence for type reexport */
   typeReexportsPresence?: 'no-tolerant' | 'tolerant' | 'tolerant-no-check';
 
@@ -1220,6 +1414,24 @@ export type JavascriptParserOptions = {
    * @default false
    */
   deferImport?: boolean;
+
+  /**
+   * Whether to enable source phase import.
+   * This option is controlled by `experiments.sourceImport` and should not be set directly.
+   * @default false
+   */
+  sourceImport?: boolean;
+
+  /**
+   * Whether to enable import.meta.resolve().
+   * @default false
+   */
+  importMetaResolve?: boolean;
+  /**
+   * Flag top-level exported functions as side-effect-free for pure-function-based tree shaking.
+   * @experimental
+   */
+  pureFunctions?: string[];
 };
 
 export type JsonParserOptions = {
@@ -1228,7 +1440,8 @@ export type JsonParserOptions = {
    */
   exportsDepth?: number;
   /**
-   * If Rule.type is set to 'json' then Rules.parser.parse option may be a function that implements custom logic to parse module's source and convert it to a json-compatible data.
+   * Custom synchronous parser for json modules. It receives the module source and should return JSON-serializable data.
+   * Can be configured through module.parser.json or through Rule.parser when Rule.type is 'json'.
    */
   parse?: (source: string) => any;
 };
@@ -1242,10 +1455,13 @@ export type ParserOptionsByModuleTypeKnown = {
   css?: CssParserOptions;
 
   /** Parser options for `css/auto` modules. */
-  'css/auto'?: CssAutoParserOptions;
+  'css/auto'?: CssAutoOrModuleParserOptions;
+
+  /** Parser options for `css/global` modules. */
+  'css/global'?: CssModuleParserOptions;
 
   /** Parser options for `css/module` modules. */
-  'css/module'?: CssModuleParserOptions;
+  'css/module'?: CssAutoOrModuleParserOptions;
 
   /** Parser options for `javascript` modules. */
   javascript?: JavascriptParserOptions;
@@ -1270,8 +1486,7 @@ export type ParserOptionsByModuleTypeUnknown = {
 
 /** Configure all parsers' options in one place with module.parser. */
 export type ParserOptionsByModuleType =
-  | ParserOptionsByModuleTypeKnown
-  | ParserOptionsByModuleTypeUnknown;
+  ParserOptionsByModuleTypeKnown | ParserOptionsByModuleTypeUnknown;
 
 export type AssetGeneratorDataUrlOptions = {
   encoding?: false | 'base64';
@@ -1287,8 +1502,7 @@ export type AssetGeneratorDataUrlFunction = (
 ) => string;
 
 export type AssetGeneratorDataUrl =
-  | AssetGeneratorDataUrlOptions
-  | AssetGeneratorDataUrlFunction;
+  AssetGeneratorDataUrlOptions | AssetGeneratorDataUrlFunction;
 
 /** Options for asset inline modules. */
 export type AssetInlineGeneratorOptions = {
@@ -1347,17 +1561,21 @@ export type AssetGeneratorOptions = AssetInlineGeneratorOptions &
   AssetResourceGeneratorOptions;
 
 export type CssGeneratorExportsConvention =
-  | 'as-is'
-  | 'camel-case'
-  | 'camel-case-only'
-  | 'dashes'
-  | 'dashes-only';
+  'as-is' | 'camel-case' | 'camel-case-only' | 'dashes' | 'dashes-only';
 
 export type CssGeneratorExportsOnly = boolean;
 
 export type CssGeneratorLocalIdentName = string;
 
 export type CssGeneratorEsModule = boolean;
+
+export type CssGeneratorLocalIdentHashDigest = string;
+
+export type CssGeneratorLocalIdentHashDigestLength = number;
+
+export type CssGeneratorLocalIdentHashFunction = string;
+
+export type CssGeneratorLocalIdentHashSalt = string;
 
 /** Generator options for css modules. */
 export type CssGeneratorOptions = {
@@ -1371,8 +1589,8 @@ export type CssGeneratorOptions = {
   esModule?: CssGeneratorEsModule;
 };
 
-/** Generator options for css/auto modules. */
-export type CssAutoGeneratorOptions = {
+/** Generator options for css/auto, css/global and css/module modules. */
+export type CssModuleGeneratorOptions = {
   /**
    * Customize how CSS export names are exported to javascript modules
    * @default 'as-is'
@@ -1385,15 +1603,32 @@ export type CssAutoGeneratorOptions = {
    */
   exportsOnly?: CssGeneratorExportsOnly;
 
+  /**
+   * Digest types used for the hash.
+   */
+  localIdentHashDigest?: CssGeneratorLocalIdentHashDigest;
+
+  /**
+   * Number of chars which are used for the hash.
+   */
+  localIdentHashDigestLength?: CssGeneratorLocalIdentHashDigestLength;
+
+  /**
+   * Algorithm used for generation the hash.
+   */
+  localIdentHashFunction?: CssGeneratorLocalIdentHashFunction;
+
+  /**
+   * Any string which is added to the hash to salt it.
+   */
+  localIdentHashSalt?: CssGeneratorLocalIdentHashSalt;
+
   /** Customize the format of the local class names generated for CSS modules */
   localIdentName?: CssGeneratorLocalIdentName;
 
   /** This configuration is available for improved ESM-CJS interoperability purposes. */
   esModule?: CssGeneratorEsModule;
 };
-
-/** Generator options for css/module modules. */
-export type CssModuleGeneratorOptions = CssAutoGeneratorOptions;
 
 /** Generator options for json modules. */
 export type JsonGeneratorOptions = {
@@ -1418,7 +1653,10 @@ export type GeneratorOptionsByModuleTypeKnown = {
   css?: CssGeneratorOptions;
 
   /** Generator options for css/auto modules. */
-  'css/auto'?: CssAutoGeneratorOptions;
+  'css/auto'?: CssModuleGeneratorOptions;
+
+  /** Generator options for css/global modules. */
+  'css/global'?: CssModuleGeneratorOptions;
 
   /** Generator options for css/module modules. */
   'css/module'?: CssModuleGeneratorOptions;
@@ -1434,8 +1672,7 @@ export type GeneratorOptionsByModuleTypeUnknown = Record<
 
 /** Options for module.generator */
 export type GeneratorOptionsByModuleType =
-  | GeneratorOptionsByModuleTypeKnown
-  | GeneratorOptionsByModuleTypeUnknown;
+  GeneratorOptionsByModuleTypeKnown | GeneratorOptionsByModuleTypeUnknown;
 
 type NoParseOptionSingle = string | RegExp | ((request: string) => boolean);
 
@@ -1539,6 +1776,7 @@ export type ExternalsType =
   | 'promise'
   | 'import'
   | 'module-import'
+  | 'modern-module'
   | 'script'
   | 'node-commonjs'
   | 'commonjs-import';
@@ -1794,10 +2032,6 @@ export type Node = false | NodeOptions;
 export type Loader = Record<string, any>;
 //#endregion
 
-//#region Snapshot
-export type SnapshotOptions = {};
-//#endregion
-
 //#region Cache
 /**
  * Snapshot options for determining which files have been modified.
@@ -1828,7 +2062,7 @@ export type CacheStorageOptions = {
   type: 'filesystem';
   /**
    * Cache directory path.
-   * @default 'node_modules/.cache/rspack'
+   * @default 'node_modules/.cache/rspack/<name>-<mode>-<compilerIndex>'
    */
   directory?: string;
 };
@@ -1851,6 +2085,19 @@ export type PersistentCacheOptions = {
    * @default ""
    */
   version?: string;
+  /**
+   * Maximum age of unused filesystem cache in seconds. Must be an integer
+   * between 1 and 4294967295, or Infinity to disable age-based cleanup.
+   * @default 7 * 24 * 60 * 60
+   */
+  maxAge?: number;
+  /**
+   * Maximum number of filesystem cache versions to retain in the cache
+   * directory. Must be an integer between 1 and 4294967295, or Infinity to
+   * disable version-based cleanup.
+   * @default 3
+   */
+  maxVersions?: number;
   /**
    * Snapshot options for determining which files have been modified.
    */
@@ -1895,9 +2142,7 @@ export type MemoryCacheOptions = {
  * cache: false
  */
 export type CacheOptions =
-  | boolean
-  | MemoryCacheOptions
-  | PersistentCacheOptions;
+  boolean | MemoryCacheOptions | PersistentCacheOptions;
 //#endregion
 
 //#region Stats
@@ -1912,15 +2157,16 @@ export type StatsPresets =
   | 'detailed'
   | 'summary';
 
+type AssetFilterItemTypes =
+  RegExp | string | ((name: string, asset: any) => boolean);
+
+type AssetFilterTypes = boolean | AssetFilterItemTypes | AssetFilterItemTypes[];
+
 type ModuleFilterItemTypes =
-  | RegExp
-  | string
-  | ((name: string, module: any, type: any) => boolean);
+  RegExp | string | ((name: string, module: any, type: any) => boolean);
 
 type ModuleFilterTypes =
-  | boolean
-  | ModuleFilterItemTypes
-  | ModuleFilterItemTypes[];
+  boolean | ModuleFilterItemTypes | ModuleFilterItemTypes[];
 
 export type StatsColorOptions = {
   /**
@@ -2205,7 +2451,7 @@ export type StatsOptions = {
    * Exclude the matching assets information.
    * @default false
    */
-  excludeAssets?: ModuleFilterTypes;
+  excludeAssets?: AssetFilterTypes;
   /**
    * Specifies the sorting order for modules.
    * @default 'id'
@@ -2384,18 +2630,12 @@ export type OptimizationSplitChunksNameFunction = (
 ) => string | undefined;
 
 type OptimizationSplitChunksName =
-  | string
-  | false
-  | OptimizationSplitChunksNameFunction;
+  string | false | OptimizationSplitChunksNameFunction;
 
 type OptimizationSplitChunksSizes = number | Record<string, number>;
 
 type OptimizationSplitChunksChunks =
-  | 'initial'
-  | 'async'
-  | 'all'
-  | RegExp
-  | ((chunk: Chunk) => boolean);
+  'initial' | 'async' | 'all' | RegExp | ((chunk: Chunk) => boolean);
 
 type SharedOptimizationSplitChunksCacheGroup = {
   /**
@@ -2437,6 +2677,14 @@ type SharedOptimizationSplitChunksCacheGroup = {
   minSize?: OptimizationSplitChunksSizes;
 
   minSizeReduction?: OptimizationSplitChunksSizes;
+
+  /**
+   * Size threshold at which splitting is enforced and other restrictions
+   * (minRemainingSize, maxAsyncRequests, maxInitialRequests) are ignored.
+   * The value is `50000` in production mode.
+   * The value is `30000` in others mode.
+   */
+  enforceSizeThreshold?: OptimizationSplitChunksSizes;
 
   /** Maximum size, in bytes, for a chunk to be generated. */
   maxSize?: OptimizationSplitChunksSizes;
@@ -2540,8 +2788,10 @@ export type OptimizationSplitChunksOptions = {
 export type Optimization = {
   /**
    * Which algorithm to use when choosing module ids.
+   * Setting to `false` disables the built-in algorithm, allowing a custom plugin
+   * (e.g. HashedModuleIdsPlugin) to provide module ids instead.
    */
-  moduleIds?: 'named' | 'natural' | 'deterministic';
+  moduleIds?: false | 'named' | 'natural' | 'deterministic' | 'hashed';
 
   /**
    * Which algorithm to use when choosing chunk ids.
@@ -2582,9 +2832,6 @@ export type Optimization = {
    * @default false
    */
   runtimeChunk?: OptimizationRuntimeChunk;
-
-  /** Detect and remove modules from chunks these modules are already included in all parents. */
-  removeAvailableModules?: boolean;
 
   /**
    * Remove empty chunks generated in the compilation.
@@ -2814,11 +3061,7 @@ export type Incremental = {
  * Presets for incremental
  */
 export type IncrementalPresets =
-  | boolean
-  | 'none'
-  | 'safe'
-  | 'advance'
-  | 'advance-silent';
+  boolean | 'none' | 'safe' | 'advance' | 'advance-silent';
 
 /**
  * Options for experiments.buildHttp
@@ -2886,6 +3129,22 @@ export type Experiments = {
    * @default false
    */
   deferImport?: boolean;
+  /**
+   * Enable source phase import feature
+   * @default false
+   */
+  sourceImport?: boolean;
+  /**
+   * Enable pure-function-based side-effects analysis.
+   * @default false
+   */
+  pureFunctions?: boolean;
+  /**
+   * Select runtime proxy context behavior. `webpack` keeps the webpack startup hook,
+   * while `rspack` uses `__rspack_context`.
+   * @default "webpack"
+   */
+  runtimeMode?: 'webpack' | 'rspack';
 };
 //#endregion
 
@@ -2899,14 +3158,14 @@ export type Watch = boolean;
 export type WatchOptions = {
   /**
    * Add a delay before rebuilding once the first file changed.
-   * This allows webpack to aggregate any other changes made during this time period into one rebuild.
+   * This allows Rspack to aggregate any other changes made during this time period into one rebuild.
    * @default 5
    */
   aggregateTimeout?: number;
 
   /**
    * Follow symlinks while looking for files.
-   * This is usually not needed as webpack already resolves symlinks ('resolve.symlinks' and 'resolve.alias').
+   * This is usually not needed as Rspack already resolves symlinks ('resolve.symlinks' and 'resolve.alias').
    */
   followSymlinks?: boolean;
 
@@ -3003,13 +3262,13 @@ export type Performance =
        */
       hints?: false | 'warning' | 'error';
       /**
-       * File size limit (in bytes) when exceeded, that webpack will provide performance hints.
-       * @default 250000
+       * File size limit (in bytes) when exceeded, Rspack will provide performance hints.
+       * @default 307200 (300 KiB)
        */
       maxAssetSize?: number;
       /**
        * Total size of an entry point (in bytes).
-       * @default 250000
+       * @default 512000 (500 KiB)
        */
       maxEntrypointSize?: number;
     };
@@ -3113,10 +3372,6 @@ export type RspackOptions = {
    */
   stats?: StatsValue;
   /**
-   * Options for snapshotting.
-   */
-  snapshot?: SnapshotOptions;
-  /**
    * Optimization options.
    */
   optimization?: Optimization;
@@ -3135,7 +3390,7 @@ export type RspackOptions = {
   /**
    * Configuration for the development server.
    */
-  devServer?: DevServer;
+  devServer?: false | DevServer;
   /**
    * Options for module configuration.
    */

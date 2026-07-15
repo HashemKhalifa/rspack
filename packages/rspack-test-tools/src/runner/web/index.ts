@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
 import { JSDOM, ResourceLoader, VirtualConsole } from 'jsdom';
 import { escapeSep } from '../../helper';
-import EventSource from '../../helper/legacy/EventSourceForNode';
-import urlToRelativePath from '../../helper/legacy/urlToRelativePath';
+import { EventSource } from '../../helper/legacy/EventSourceForNode';
+import { urlToRelativePath } from '../../helper/legacy/urlToRelativePath';
 import type { TRunnerFile, TRunnerRequirer } from '../../type';
 import { type INodeRunnerOptions, NodeRunner } from '../node';
 
@@ -54,6 +54,29 @@ export class WebRunner extends NodeRunner {
     this.dom.window.console = console;
     // compat with FakeDocument
     this.dom.window.eval(`
+      var linkSheetDescriptor = Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, "sheet");
+      Object.defineProperty(HTMLLinkElement.prototype, "sheet", {
+        get: function() {
+          var sheet = linkSheetDescriptor && linkSheetDescriptor.get
+            ? linkSheetDescriptor.get.call(this)
+            : undefined;
+          var css = window.__LINK_SHEET__ && window.__LINK_SHEET__[this.href];
+          if (sheet) {
+            if (css !== undefined && sheet.css === undefined) {
+              Object.defineProperty(sheet, "css", {
+                configurable: true,
+                value: css,
+              });
+            }
+            return sheet;
+          }
+          if (css !== undefined) {
+            return { css: css };
+          }
+          return sheet;
+        },
+      });
+
       Object.defineProperty(document.head, "_children", {
         get: function() {
           return Array.from(document.head.children).map(function(ele) {
@@ -190,7 +213,8 @@ export class WebRunner extends NodeRunner {
         return {
           status: 200,
           ok: true,
-          json: async () => JSON.parse(buffer.toString('utf-8')),
+          json: () =>
+            Promise.resolve().then(() => JSON.parse(buffer.toString('utf-8'))),
         };
       } catch (err) {
         if ((err as { code: string }).code === 'ENOENT') {
@@ -307,6 +331,19 @@ export class WebRunner extends NodeRunner {
     ) => {
       return originIt(description, async (...args: any[]) => {
         try {
+          if (fn.length > 0) {
+            return await new Promise<void>((resolve, reject) => {
+              const done = (err?: Error) => (err ? reject(err) : resolve());
+              try {
+                const result = fn(...args, done);
+                if (result && typeof result.then === 'function') {
+                  result.then(resolve, reject);
+                }
+              } catch (e) {
+                reject(e);
+              }
+            });
+          }
           return await fn(...args);
         } catch (e) {
           throw locatedError(e as Error, file);

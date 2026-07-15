@@ -3,11 +3,12 @@ use rspack_collections::Identifier;
 use rspack_core::{
   AsModuleDependency, ContextDependency, ContextOptions, Dependency, DependencyCategory,
   DependencyCodeGeneration, DependencyId, DependencyRange, DependencyTemplate,
-  DependencyTemplateType, DependencyType, ExportsInfoArtifact, FactorizeInfo, ModuleGraph,
-  ModuleGraphCacheArtifact, ReferencedSpecifier, ResourceIdentifier, TemplateContext,
+  DependencyTemplateType, DependencyType, ExportsInfoArtifact, FactorizeInfo, ImportAttributes,
+  ModuleGraph, ModuleGraphCacheArtifact, ReferencedSpecifier, ResourceIdentifier, TemplateContext,
   TemplateReplaceSource,
 };
 use rspack_error::Diagnostic;
+use rspack_util::json_stringify;
 
 use super::{
   context_dependency_template_as_require_call, create_resource_identifier_for_context_dependency,
@@ -17,8 +18,7 @@ fn create_resource_identifier(options: &ContextOptions) -> Identifier {
   let mut resource_identifier =
     create_resource_identifier_for_context_dependency(None, options).to_string();
   if let Some(attributes) = &options.attributes {
-    resource_identifier
-      .push_str(&serde_json::to_string(attributes).expect("json stringify failed"));
+    resource_identifier.push_str(&json_stringify(attributes));
   }
   resource_identifier.into()
 }
@@ -55,7 +55,17 @@ impl ImportContextDependency {
     }
   }
 
-  pub fn set_referenced_specifiers(&mut self, referenced_specifiers: Vec<ReferencedSpecifier>) {
+  pub fn set_referenced_specifiers(
+    &mut self,
+    referenced_specifiers: Vec<ReferencedSpecifier>,
+    from_magic_comment: bool,
+  ) {
+    if !from_magic_comment && referenced_specifiers.is_empty() {
+      // If the referenced specifiers are empty, keep it as default (None), since this dependency can't eliminate by side effects optimization,
+      // so if we set it to Some(vec![]), and the dependency still executes, it will cause runtime error because the exports are all tree shaken.
+      // see test case `tests/rspack-test/configCases/tree-shaking/side-effects-free-dynamic-import`
+      return;
+    }
     self.options.referenced_specifiers = Some(referenced_specifiers);
     self.resource_identifier = create_resource_identifier(&self.options);
   }
@@ -75,8 +85,16 @@ impl Dependency for ImportContextDependency {
     &DependencyType::ImportContext
   }
 
+  fn get_phase(&self) -> rspack_core::ImportPhase {
+    self.options.phase.unwrap_or_default()
+  }
+
   fn range(&self) -> Option<DependencyRange> {
     Some(self.range)
+  }
+
+  fn get_attributes(&self) -> Option<&ImportAttributes> {
+    self.options.attributes.as_ref()
   }
 
   fn could_affect_referencing_module(&self) -> rspack_core::AffectType {

@@ -1,16 +1,21 @@
 use rspack_util::atom::Atom;
 use rustc_hash::FxHashSet;
+use swc_experimental_ecma_ast::CallExpr;
 
-use super::{JavascriptParserPlugin, TopLevelSymbol};
+use super::{
+  JavascriptParserPlugin,
+  inner_graph::state::{InnerGraphMapUsage, TopLevelSymbol},
+};
 use crate::visitors::JavascriptParser;
 
 pub struct JavascriptMetaInfoPlugin;
 
-impl JavascriptParserPlugin for JavascriptMetaInfoPlugin {
+#[rspack_macros::implemented_javascript_parser_hooks]
+impl<'p, 'a> JavascriptParserPlugin<'p, 'a> for JavascriptMetaInfoPlugin {
   fn call(
     &self,
-    parser: &mut JavascriptParser,
-    _expr: &swc_core::ecma::ast::CallExpr,
+    parser: &mut JavascriptParser<'p>,
+    _expr: &CallExpr<'_>,
     for_name: &str,
   ) -> Option<bool> {
     if for_name == "eval" {
@@ -18,7 +23,7 @@ impl JavascriptParserPlugin for JavascriptMetaInfoPlugin {
       if let Some(top_level_symbol) = parser.inner_graph.get_top_level_symbol() {
         parser.inner_graph.add_usage(
           TopLevelSymbol::global(),
-          super::InnerGraphMapUsage::TopLevel(top_level_symbol),
+          InnerGraphMapUsage::TopLevel(top_level_symbol),
         );
       } else {
         parser.inner_graph.bailout();
@@ -28,7 +33,7 @@ impl JavascriptParserPlugin for JavascriptMetaInfoPlugin {
     None
   }
 
-  fn finish(&self, parser: &mut JavascriptParser) -> Option<bool> {
+  fn finish(&self, parser: &mut JavascriptParser<'p>) -> Option<bool> {
     if parser.build_info.top_level_declarations.is_none() {
       parser.build_info.top_level_declarations = Some(FxHashSet::default());
     }

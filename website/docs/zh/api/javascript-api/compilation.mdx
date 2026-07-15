@@ -1,3 +1,7 @@
+---
+description: 'Compilation 对象是 Rspack 构建过程中的核心对象之一，每当 Rspack 执行构建时（包括监听模式下的重新构建），都会创建一个新的 Compilation 实例，它包含了当前构建的所有信息。'
+---
+
 import WebpackLicense from '@components/WebpackLicense';
 import AssetInfoType from '../../types/asset-info.mdx';
 import SourceType from '../../types/source.mdx';
@@ -576,13 +580,13 @@ getCache(name: string): CacheFacade;
 
 **类型：** `RspackOptionsNormalized`
 
-获取此 Compilation 使用的完整配置，详见[配置 Rspack](/config/index)。
+获取此 Compilation 使用的完整配置，详见[配置 Rspack](/config/)。
 
 ### compiler
 
 **类型：** `Compiler`
 
-获取所属的[编译器对象](/api/javascript-api/index)。
+获取所属的[编译器对象](/api/javascript-api/)。
 
 <Collapse>
   <CollapsePanel

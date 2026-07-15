@@ -1,3 +1,7 @@
+---
+description: 'Compiler hooks 允许 Rspack 插件在特定阶段介入构建流程。它们代表了从初始化到资源输出的各个生命周期阶段。'
+---
+
 import Mermaid from '@components/Mermaid';
 import CompilerType from '../../types/compiler.mdx';
 import CompilationType from '../../types/compilation.mdx';
@@ -207,7 +211,7 @@ resolver 设置完成之后触发。
 在开始执行一次构建之前调用。
 
 :::note
-这个钩子仅在调用 [compiler.run()](/api/javascript-api/index#compilerrun) 时触发（对应 `rspack build` 命令），在监听模式（watch mode）下不会执行。在监听模式下，你可以使用 [watchRun](#watchrun) 钩子。
+这个钩子仅在调用 [compiler.run()](/api/javascript-api/#compilerrun) 时触发（对应 `rspack build` 命令），在监听模式（watch mode）下不会执行。在监听模式下，你可以使用 [watchRun](#watchrun) 钩子。
 :::
 
 - **类型：** `AsyncSeriesHook<[Compiler]>`
@@ -258,7 +262,7 @@ class ExamplePlugin {
 在开始执行一次构建时调用。
 
 :::note
-这个钩子仅在调用 [compiler.run()](/api/javascript-api/index#compilerrun) 时触发（对应 `rspack build` 命令），在监听模式（watch mode）下不会执行。在监听模式下，你可以使用 [watchRun](#watchrun) 钩子。
+这个钩子仅在调用 [compiler.run()](/api/javascript-api/#compilerrun) 时触发（对应 `rspack build` 命令），在监听模式（watch mode）下不会执行。在监听模式下，你可以使用 [watchRun](#watchrun) 钩子。
 :::
 
 - **类型：** `AsyncSeriesHook<[Compiler]>`
@@ -311,7 +315,7 @@ class ExamplePlugin {
 你可以通过 `compiler.modifiedFiles` 和 `compiler.removedFiles` 获取变更的文件路径和删除的文件路径。
 
 :::note
-这个钩子仅在调用 [compiler.watch()](/api/javascript-api/index#compilerwatch) 时触发，在非监听模式下不会执行。在非监听模式下，你可以使用 [run](#run) 或 [beforeRun](#beforerun) 钩子。
+这个钩子仅在调用 [compiler.watch()](/api/javascript-api/#compilerwatch) 时触发，在非监听模式下不会执行。在非监听模式下，你可以使用 [run](#run) 或 [beforeRun](#beforerun) 钩子。
 :::
 
 - **类型：** `AsyncSeriesHook<[Compiler]>`

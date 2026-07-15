@@ -12,16 +12,16 @@ use futures::future::BoxFuture;
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rspack_collections::IdentifierMap;
 use rspack_core::{
-  AsyncModulesArtifact, BoxModule, ChunkByUkey, ChunkNamedIdArtifact, Compilation,
-  CompilationAfterOptimizeModules, CompilationAfterProcessAssets, CompilationBuildModule,
-  CompilationChunkIds, CompilationFinishModules, CompilationId, CompilationModuleIds,
-  CompilationOptimizeChunkModules, CompilationOptimizeChunks, CompilationOptimizeCodeGeneration,
-  CompilationOptimizeDependencies, CompilationOptimizeModules, CompilationOptimizeTree,
-  CompilationParams, CompilationProcessAssets, CompilationSeal, CompilationSucceedModule,
-  CompilerAfterEmit, CompilerClose, CompilerCompilation, CompilerEmit, CompilerFinishMake,
-  CompilerId, CompilerMake, CompilerThisCompilation, ExportsInfoArtifact, ModuleIdentifier,
-  ModuleIdsArtifact, Plugin, SideEffectsOptimizeArtifact,
-  build_module_graph::BuildModuleGraphArtifact,
+  AsyncModulesArtifact, BoxModule, ChunkByUkey, ChunkNamedIdArtifact, CircularModulesInfo,
+  Compilation, CompilationAfterOptimizeModules, CompilationAfterProcessAssets,
+  CompilationBuildModule, CompilationChunkIds, CompilationFinishModules, CompilationId,
+  CompilationModuleIds, CompilationOptimizeChunkModules, CompilationOptimizeChunks,
+  CompilationOptimizeCodeGeneration, CompilationOptimizeDependencies, CompilationOptimizeModules,
+  CompilationOptimizeTree, CompilationParams, CompilationProcessAssets, CompilationSeal,
+  CompilationSucceedModule, CompilerAfterEmit, CompilerClose, CompilerCompilation, CompilerEmit,
+  CompilerFinishMake, CompilerId, CompilerMake, CompilerThisCompilation, ExportsInfoArtifact,
+  ModuleIdentifier, ModuleIdsArtifact, Plugin, SideEffectsOptimizeArtifact,
+  SideEffectsStateArtifact, build_module_graph::BuildModuleGraphArtifact,
 };
 use rspack_error::{Diagnostic, Result};
 use rspack_hook::{plugin, plugin_hook};
@@ -101,7 +101,7 @@ impl ProgressPlugin {
         let progress_bar = MULTI_PROGRESS.add(ProgressBar::new(100));
 
         let mut progress_bar_style = ProgressStyle::with_template(&options.template)
-          .expect("TODO:")
+          .expect("should be a valid progress bar template")
           .progress_chars(&options.progress_chars);
         if let Some(tick_strings) = &options.tick_strings {
           progress_bar_style = progress_bar_style.tick_strings(
@@ -442,6 +442,7 @@ async fn finish_modules(
   _compilation: &Compilation,
   _async_modules_artifact: &mut AsyncModulesArtifact,
   _exports_info_artifact: &mut ExportsInfoArtifact,
+  _side_effects_state_artifact: &mut SideEffectsStateArtifact,
 ) -> Result<()> {
   self.sealing_hooks_report("finish modules", 0).await
 }
@@ -470,6 +471,7 @@ async fn optimize_dependencies(
 async fn optimize_modules(
   &self,
   _compilation: &Compilation,
+  _circular_modules: &mut CircularModulesInfo,
   _diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Option<bool>> {
   self.sealing_hooks_report("optimize modules", 7).await?;

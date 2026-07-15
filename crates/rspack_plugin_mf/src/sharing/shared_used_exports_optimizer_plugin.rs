@@ -8,6 +8,7 @@ use rspack_core::{
   ModuleIdentifier, Plugin, RuntimeGlobals, RuntimeModule, RuntimeModuleExt, RuntimeSpec,
   SideEffectsOptimizeArtifact,
   build_module_graph::BuildModuleGraphArtifact,
+  module_declared_side_effect_free,
   rspack_sources::{RawStringSource, SourceExt, SourceValue},
 };
 use rspack_error::{Diagnostic, Result};
@@ -289,7 +290,7 @@ async fn optimize_dependencies(
         let is_side_effect_free = {
           module_graph
             .module_by_identifier(&real_shared_identifier)
-            .and_then(|module| module.factory_meta().and_then(|meta| meta.side_effect_free))
+            .and_then(|module| module_declared_side_effect_free(module.as_ref()))
             .unwrap_or(false)
         };
 
@@ -342,7 +343,7 @@ async fn optimize_dependencies(
           // Mark used exports
           for export_info in exports_info_data.exports_mut().values_mut() {
             export_info.set_used_conditionally(
-              Box::new(|used| *used == rspack_core::UsageState::Unknown),
+              |used| *used == rspack_core::UsageState::Unknown,
               rspack_core::UsageState::Unused,
               None,
             );

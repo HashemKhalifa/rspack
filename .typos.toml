@@ -7,13 +7,16 @@ extend-exclude = [
   "**/*.{css,map,json,txt,snap,bak,diff,html}",
   "**/tests/**",
   "**/mock/**",
+  # Imported rspack_sources test and benchmark data contains minified code and source-map mappings.
+  "crates/rspack_sources/**",
+  "xtask/benchmark/benches/fixtures/rspack_sources/**",
+  "xtask/benchmark/benches/groups/rspack_sources_*",
   "packages/rspack-test-tools",
   "packages/rspack/src/util/hash",
   "tests/**",
   "**/CHANGELOG.md",
   "GOVERNANCE.md",
   "pnpm-lock.yaml",
-  "biome.jsonc",
   "scripts/test/diff.cjs",
   "scripts/test/binary-path.cjs",
 ]

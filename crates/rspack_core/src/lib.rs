@@ -19,13 +19,14 @@ mod dependencies_block;
 pub mod diagnostics;
 pub mod incremental;
 pub use dependencies_block::{
-  AsyncDependenciesBlock, AsyncDependenciesBlockIdentifier, DependenciesBlock,
+  AsyncDependenciesBlock, AsyncDependenciesBlockIdentifier, AsyncDependenciesBlockIdentifierMap,
+  AsyncDependenciesBlockIdentifierSet, DependenciesBlock,
 };
 mod fake_namespace_object;
 pub use fake_namespace_object::*;
 mod runtime_template;
-use rspack_collections::Database;
 pub use runtime_template::*;
+use rustc_hash::FxHashMap;
 pub mod external_module;
 pub use external_module::*;
 mod logger;
@@ -41,13 +42,20 @@ pub use module::*;
 pub use parser_and_generator::*;
 mod runtime_globals;
 pub use normal_module::*;
-pub use runtime_globals::{MODULE_GLOBALS, REQUIRE_SCOPE_GLOBALS, RuntimeGlobals, RuntimeVariable};
+pub use runtime_globals::{
+  MODULE_GLOBALS, REQUIRE_SCOPE_GLOBALS, RuntimeGlobals, RuntimeVariable, runtime_variable_name,
+};
+mod runtime_module_source;
+pub use runtime_module_source::render_runtime_module_source;
 mod plugin;
 pub use plugin::*;
 mod context_module;
 pub use context_module::*;
 mod context_module_factory;
 pub use context_module_factory::*;
+mod glob_utils;
+pub(crate) use glob_utils::walk_dir;
+pub use glob_utils::*;
 mod init_fragment;
 pub use init_fragment::*;
 mod module_factory;
@@ -98,8 +106,8 @@ pub use rspack_location::{
 };
 pub mod concatenated_module;
 pub mod reserved_names;
-
 use rspack_cacheable::{cacheable, with::AsPreset};
+use rspack_hash::{RspackHash, RspackHasher};
 pub use rspack_loader_runner::{
   AdditionalData, BUILTIN_LOADER_PREFIX, ParseMeta, ResourceData, ResourceParsedData, Scheme,
   get_scheme, parse_resource,
@@ -111,7 +119,7 @@ pub use rspack_sources;
 pub mod debug_info;
 
 #[cacheable]
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SourceType {
   JavaScript,
   Css,
@@ -132,21 +140,33 @@ pub enum SourceType {
 
 impl std::fmt::Display for SourceType {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+impl RspackHash for SourceType {
+  fn hash(&self, state: &mut RspackHasher) {
+    self.as_str().hash(state);
+  }
+}
+
+impl SourceType {
+  fn as_str(&self) -> &str {
     match self {
-      SourceType::JavaScript => write!(f, "javascript"),
-      SourceType::Css => write!(f, "css"),
-      SourceType::CssUrl => write!(f, "css-url"),
-      SourceType::Wasm => write!(f, "wasm"),
-      SourceType::Asset => write!(f, "asset"),
-      SourceType::Expose => write!(f, "expose"),
-      SourceType::Remote => write!(f, "remote"),
-      SourceType::ShareInit => write!(f, "share-init"),
-      SourceType::ConsumeShared => write!(f, "consume-shared"),
-      SourceType::ShareContainerShared => write!(f, "share-container-shared"),
-      SourceType::Unknown => write!(f, "unknown"),
-      SourceType::CssImport => write!(f, "css-import"),
-      SourceType::Custom(source_type) => f.write_str(source_type),
-      SourceType::Runtime => write!(f, "runtime"),
+      SourceType::JavaScript => "javascript",
+      SourceType::Css => "css",
+      SourceType::CssUrl => "css-url",
+      SourceType::Wasm => "wasm",
+      SourceType::Asset => "asset",
+      SourceType::Expose => "expose",
+      SourceType::Remote => "remote",
+      SourceType::ShareInit => "share-init",
+      SourceType::ConsumeShared => "consume-shared",
+      SourceType::ShareContainerShared => "share-container-shared",
+      SourceType::Unknown => "unknown",
+      SourceType::CssImport => "css-import",
+      SourceType::Custom(source_type) => source_type,
+      SourceType::Runtime => "runtime",
     }
   }
 }
@@ -174,7 +194,9 @@ impl From<&ModuleType> for SourceType {
   fn from(value: &ModuleType) -> Self {
     match value {
       ModuleType::JsAuto | ModuleType::JsEsm | ModuleType::JsDynamic => Self::JavaScript,
-      ModuleType::Css | ModuleType::CssModule | ModuleType::CssAuto => Self::Css,
+      ModuleType::Css | ModuleType::CssModule | ModuleType::CssAuto | ModuleType::CssGlobal => {
+        Self::Css
+      }
       ModuleType::WasmSync | ModuleType::WasmAsync => Self::Wasm,
       ModuleType::Asset | ModuleType::AssetInline | ModuleType::AssetResource => Self::Asset,
       ModuleType::ConsumeShared => Self::ConsumeShared,
@@ -191,6 +213,7 @@ pub enum ModuleType {
   Css,
   CssModule,
   CssAuto,
+  CssGlobal,
   JsAuto,
   JsDynamic,
   JsEsm,
@@ -244,7 +267,7 @@ impl ModuleType {
 
   /// Webpack arbitrary determines the binary type from [NormalModule.binary](https://github.com/webpack/webpack/blob/1f99ad6367f2b8a6ef17cce0e058f7a67fb7db18/lib/NormalModule.js#L302)
   pub fn is_binary(&self) -> bool {
-    self.is_asset_like() || self.is_wasm_like()
+    matches!(self, ModuleType::AssetBytes) || self.is_asset_like() || self.is_wasm_like()
   }
 
   pub fn as_str(&self) -> &'static str {
@@ -256,6 +279,7 @@ impl ModuleType {
       ModuleType::Css => "css",
       ModuleType::CssModule => "css/module",
       ModuleType::CssAuto => "css/auto",
+      ModuleType::CssGlobal => "css/global",
 
       ModuleType::Json => "json",
 
@@ -298,6 +322,7 @@ impl From<&str> for ModuleType {
       "css" => Self::Css,
       "css/module" => Self::CssModule,
       "css/auto" => Self::CssAuto,
+      "css/global" => Self::CssGlobal,
 
       "json" => Self::Json,
 
@@ -321,7 +346,7 @@ pub(crate) type SharedPluginDriver = Arc<PluginDriver>;
 
 #[derive(Debug, Default, Clone)]
 pub struct ChunkByUkey {
-  inner: Database<Chunk>,
+  inner: FxHashMap<ChunkUkey, Chunk>,
 }
 
 impl ChunkByUkey {
@@ -337,7 +362,7 @@ impl ChunkByUkey {
     &mut self,
     ukeys: [&ChunkUkey; N],
   ) -> [Option<&mut Chunk>; N] {
-    self.inner.get_many_mut(ukeys)
+    self.inner.get_disjoint_mut(ukeys)
   }
 
   pub fn expect_get(&self, ukey: &ChunkUkey) -> &Chunk {
@@ -353,7 +378,9 @@ impl ChunkByUkey {
   }
 
   pub fn add(&mut self, chunk: Chunk) -> &mut Chunk {
-    self.inner.add(chunk)
+    let ukey = chunk.ukey();
+    debug_assert!(!self.inner.contains_key(&ukey));
+    self.inner.entry(ukey).or_insert(chunk)
   }
 
   pub fn remove(&mut self, ukey: &ChunkUkey) -> Option<Chunk> {
@@ -368,7 +395,7 @@ impl ChunkByUkey {
   }
 
   pub fn contains(&self, ukey: &ChunkUkey) -> bool {
-    self.inner.contains(ukey)
+    self.inner.contains_key(ukey)
   }
 
   pub fn keys(&self) -> impl Iterator<Item = &ChunkUkey> {
@@ -402,7 +429,7 @@ impl ChunkByUkey {
 
 #[derive(Debug, Default, Clone)]
 pub struct ChunkGroupByUkey {
-  inner: Database<ChunkGroup>,
+  inner: FxHashMap<ChunkGroupUkey, ChunkGroup>,
 }
 
 impl ChunkGroupByUkey {
@@ -418,7 +445,7 @@ impl ChunkGroupByUkey {
     &mut self,
     ukeys: [&ChunkGroupUkey; N],
   ) -> [Option<&mut ChunkGroup>; N] {
-    self.inner.get_many_mut(ukeys)
+    self.inner.get_disjoint_mut(ukeys)
   }
 
   pub fn expect_get(&self, ukey: &ChunkGroupUkey) -> &ChunkGroup {
@@ -434,7 +461,9 @@ impl ChunkGroupByUkey {
   }
 
   pub fn add(&mut self, chunk: ChunkGroup) -> &mut ChunkGroup {
-    self.inner.add(chunk)
+    let ukey = chunk.ukey();
+    debug_assert!(!self.inner.contains_key(&ukey));
+    self.inner.entry(ukey).or_insert(chunk)
   }
 
   pub fn remove(&mut self, ukey: &ChunkGroupUkey) -> Option<ChunkGroup> {
@@ -449,7 +478,7 @@ impl ChunkGroupByUkey {
   }
 
   pub fn contains(&self, ukey: &ChunkGroupUkey) -> bool {
-    self.inner.contains(ukey)
+    self.inner.contains_key(ukey)
   }
 
   pub fn keys(&self) -> impl Iterator<Item = &ChunkGroupUkey> {

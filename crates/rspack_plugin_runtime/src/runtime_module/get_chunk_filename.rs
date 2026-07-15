@@ -1,9 +1,7 @@
 use std::{cmp::Ordering, fmt};
 
-use indexmap::IndexMap;
 use itertools::Itertools;
 use rspack_cacheable::with::Unsupported;
-use rspack_collections::DatabaseItem;
 use rspack_core::{
   Chunk, ChunkGraph, ChunkUkey, Compilation, Filename, PathData, RuntimeGlobals, RuntimeModule,
   RuntimeModuleGenerateContext, RuntimeTemplate, SourceType, get_filename_without_hash_length,
@@ -36,8 +34,8 @@ pub struct GetChunkFilenameRuntimeModule {
 impl fmt::Debug for GetChunkFilenameRuntimeModule {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("GetChunkFilenameRuntimeModule")
-      .field("id", &self.id)
-      .field("chunk", &self.chunk)
+      .field("id", self.id())
+      .field("chunk", &self.chunk())
       .field("content_type", &self.content_type)
       .field("source_type", &self.source_type)
       .field("global", &self.global)
@@ -75,9 +73,36 @@ impl GetChunkFilenameRuntimeModule {
 
 #[async_trait::async_trait]
 impl RuntimeModule for GetChunkFilenameRuntimeModule {
+  fn runtime_requirements(
+    &self,
+    compilation: &Compilation,
+  ) -> rspack_core::RuntimeModuleRuntimeRequirements {
+    rspack_core::RuntimeModuleRuntimeRequirements {
+      dependencies: {
+        if (self.source_type == SourceType::JavaScript
+          && has_hash_placeholder(compilation.options.output.chunk_filename.as_str()))
+          || (self.source_type == SourceType::Css
+            && has_hash_placeholder(compilation.options.output.css_chunk_filename.as_str()))
+        {
+          RuntimeGlobals::GET_FULL_HASH
+        } else {
+          RuntimeGlobals::default()
+        }
+      },
+      define: {
+        match self.source_type {
+          SourceType::JavaScript => RuntimeGlobals::GET_CHUNK_SCRIPT_FILENAME,
+          SourceType::Css => RuntimeGlobals::GET_CHUNK_CSS_FILENAME,
+          _ => RuntimeGlobals::default(),
+        }
+      },
+      ..Default::default()
+    }
+  }
+
   fn template(&self) -> Vec<(String, String)> {
     vec![(
-      self.id.to_string(),
+      self.id().to_string(),
       include_str!("runtime/get_chunk_filename.ejs").to_string(),
     )]
   }
@@ -93,7 +118,7 @@ impl RuntimeModule for GetChunkFilenameRuntimeModule {
     let compilation = context.compilation;
     let runtime_template = context.runtime_template;
     let chunks = self
-      .chunk
+      .chunk()
       .and_then(|chunk_ukey| {
         compilation
           .build_chunk_graph_artifact
@@ -285,7 +310,7 @@ impl RuntimeModule for GetChunkFilenameRuntimeModule {
       None
     };
 
-    let mut static_urls = IndexMap::new();
+    let mut static_urls = FxIndexMap::default();
     for (filename_template, chunk_ukey) in
       chunk_filenames
         .iter()
@@ -360,6 +385,7 @@ impl RuntimeModule for GetChunkFilenameRuntimeModule {
                 fake_filename
                   .render(
                     PathData::default()
+                      .chunk(chunk.ukey(), compilation)
                       .chunk_name_optional(chunk.name())
                       .chunk_id_optional(chunk.id().map(|id| id.as_str())),
                     None,
@@ -382,13 +408,20 @@ impl RuntimeModule for GetChunkFilenameRuntimeModule {
           static_urls
             .entry(filename)
             .or_insert(Vec::new())
-            .push(chunk_id.as_str());
+            .push(chunk_id);
         }
       }
     }
 
-    let source = runtime_template.render(&self.id, Some(serde_json::json!({
-      "_global": self.global,
+    let source = runtime_template.render(self.id(), Some(serde_json::json!({
+      "_global": match self.source_type {
+        SourceType::JavaScript => runtime_template
+          .render_runtime_global_definition(&RuntimeGlobals::GET_CHUNK_SCRIPT_FILENAME),
+        SourceType::Css => {
+          runtime_template.render_runtime_global_definition(&RuntimeGlobals::GET_CHUNK_CSS_FILENAME)
+        }
+        _ => self.global.clone(),
+      },
       "_static_urls": static_urls
                         .iter()
                         .map(|(filename, chunk_ids)| stringify_static_chunk_map(filename, chunk_ids))
@@ -397,17 +430,5 @@ impl RuntimeModule for GetChunkFilenameRuntimeModule {
     })))?;
 
     Ok(source)
-  }
-
-  fn additional_runtime_requirements(&self, compilation: &Compilation) -> RuntimeGlobals {
-    if (self.source_type == SourceType::JavaScript
-      && has_hash_placeholder(compilation.options.output.chunk_filename.as_str()))
-      || (self.source_type == SourceType::Css
-        && has_hash_placeholder(compilation.options.output.css_chunk_filename.as_str()))
-    {
-      RuntimeGlobals::GET_FULL_HASH
-    } else {
-      RuntimeGlobals::default()
-    }
   }
 }

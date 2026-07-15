@@ -1,13 +1,16 @@
 /** @type {import("@rspack/core").Configuration} */
 module.exports = {
-	target: "web",
-	output: {
-		chunkFilename: "[name].js"
-	},
-	performance: {
-		hints: false
-	},
-	optimization: {
-		minimize: false
-	}
+  externals: {
+    './the-chunk.js': 'commonjs ./the-chunk.js',
+  },
+  target: 'web',
+  output: {
+    chunkFilename: '[name].js',
+  },
+  performance: {
+    hints: false,
+  },
+  optimization: {
+    minimize: false,
+  },
 };

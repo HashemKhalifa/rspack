@@ -1,3 +1,7 @@
+---
+description: 'Use React Server Components with Rspack, covering setup, configuration, integration details, and framework-specific development patterns.'
+---
+
 import { PackageManagerTabs } from '@theme';
 
 # React Server Components
@@ -13,7 +17,7 @@ Rspack provides two solutions to support React Server Components:
 
 ## Example
 
-The [rspack-rsc-examples](https://github.com/rstackjs/rspack-rsc-examples) repository contains full examples of building React Server Component applications using Rspack.
+The [rstack-examples](https://github.com/rstackjs/rstack-examples/tree/main/rspack/rspack-rsc) repository contains full examples of building React Server Component applications using Rspack.
 
 ## Install dependencies
 
@@ -212,55 +216,30 @@ const response = await handleRequest({
 Add `builtin:swc-loader` for `.jsx` / `.tsx` and enable `rspackExperiments.reactServerComponents` so Rspack parses and transforms RSC directives such as `"use client"`, `"use server"`, and `"use server-entry"`.
 
 ```js title="rspack.config.mjs"
-const jsxRule = {
-  test: /\.jsx$/,
+const rscRule = {
+  test: /\.(?:js|mjs|jsx|ts|tsx)$/,
   use: {
     loader: 'builtin:swc-loader',
     options: {
-      jsc: {
-        parser: {
-          syntax: 'ecmascript',
-          jsx: true,
-        },
-      },
+      detectSyntax: 'auto',
     },
     rspackExperiments: {
       reactServerComponents: true,
     },
   },
-  type: 'javascript/auto',
-};
-
-const tsxRule = {
-  test: /\.tsx$/,
-  use: {
-    loader: 'builtin:swc-loader',
-    options: {
-      jsc: {
-        parser: {
-          syntax: 'typescript',
-          tsx: true,
-        },
-      },
-    },
-    rspackExperiments: {
-      reactServerComponents: true,
-    },
-  },
-  type: 'javascript/auto',
 };
 
 export default [
   {
     target: 'web',
     module: {
-      rules: [jsxRule, tsxRule],
+      rules: [rscRule],
     },
   },
   {
     target: 'node',
     module: {
-      rules: [jsxRule, tsxRule],
+      rules: [rscRule],
     },
   },
 ];

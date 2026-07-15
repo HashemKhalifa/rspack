@@ -163,7 +163,7 @@ impl ExternalInterop {
   pub fn render(
     &self,
     compilation: &Compilation,
-    runtime_template: &RuntimeCodeTemplate<'_>,
+    runtime_template: &RuntimeCodeTemplate,
   ) -> ConcatSource {
     let mut source = ConcatSource::default();
     let name = self.required_symbol.as_ref();
@@ -288,7 +288,12 @@ pub struct ChunkLinkContext {
   pub raw_import_stmts: FxIndexMap<RawImportSource, ImportSpec>,
 
   /**
-  `const symbol = __webpack_require__(module_id)`
+  namespace imports already provided by module init fragments
+   */
+  pub module_external_namespace_imports: FxHashMap<RawImportSource, Atom>,
+
+  /**
+  `const symbol = __rspack_require(module_id)`
   */
   pub required: IdentifierIndexMap<ExternalInterop>,
 
@@ -324,6 +329,11 @@ pub struct ChunkLinkContext {
   all used symbols in current chunk
   */
   pub used_names: FxHashSet<Atom>,
+
+  /**
+  whether `__rspack_require` is exported by a runtime module instead of chunk exports
+  */
+  pub exports_require_via_runtime_module: bool,
 }
 
 impl ChunkLinkContext {
@@ -350,7 +360,9 @@ impl ChunkLinkContext {
       used_names: Default::default(),
       exported_symbols: Default::default(),
       raw_import_stmts: Default::default(),
+      module_external_namespace_imports: Default::default(),
       raw_star_exports: Default::default(),
+      exports_require_via_runtime_module: false,
     }
   }
 

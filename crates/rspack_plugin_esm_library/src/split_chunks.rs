@@ -57,7 +57,7 @@ impl MatchGroup {
     }
   }
 
-  pub fn get_sizes(&mut self, module_sizes: &ModuleSizes) -> SplitChunkSizes {
+  pub fn get_sizes(&mut self, module_sizes: &ModuleSizes) -> &SplitChunkSizes {
     if !self.added.is_empty() {
       let added = std::mem::take(&mut self.added);
       for module in added {
@@ -92,12 +92,12 @@ impl MatchGroup {
       }
     }
 
-    self.sizes.clone()
+    &self.sizes
   }
 }
 
 impl ModulesContainer for MatchGroup {
-  fn get_sizes(&mut self, module_sizes: &ModuleSizes) -> SplitChunkSizes {
+  fn get_sizes(&mut self, module_sizes: &ModuleSizes) -> &SplitChunkSizes {
     MatchGroup::get_sizes(self, module_sizes)
   }
 
@@ -192,7 +192,7 @@ async fn matches_module_to_cache_group(
 
 pub(crate) async fn split(groups: &[CacheGroup], compilation: &mut Compilation) -> Result<()> {
   let modules = compilation.build_chunk_graph_artifact.chunk_graph.modules();
-  let results: Vec<std::result::Result<_, _>> = rspack_futures::scope::<_, Result<_>>(|token| {
+  let results: Vec<std::result::Result<_, _>> = rspack_parallel::scope::<_, Result<_>>(|token| {
     modules.iter().copied().for_each(|module_identifier| {
       // SAFETY: `groups` and `compilation` outlive the scope and are only read (not mutated) concurrently.
       let s = unsafe { token.used((groups, &*compilation)) };
@@ -375,7 +375,13 @@ pub(crate) async fn split(groups: &[CacheGroup], compilation: &mut Compilation) 
         continue;
       }
 
-      let orig_chunk = EsmLibraryPlugin::get_module_chunk(*m, compilation);
+      let orig_chunk = match EsmLibraryPlugin::get_module_chunk(*m, compilation) {
+        Ok(c) => c,
+        Err(e) => {
+          tracing::warn!(error = %e, "failed to resolve module chunk during split_chunks");
+          continue;
+        }
+      };
 
       compilation
         .build_chunk_graph_artifact

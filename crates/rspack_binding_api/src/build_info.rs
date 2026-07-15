@@ -13,12 +13,12 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::{define_symbols, module::Module};
 
 define_symbols! {
-  BUILD_INFO_ASSETS_SYMBOL => "BUILD_INFO_ASSETS_SYMBOL",
-  BUILD_INFO_FILE_DEPENDENCIES_SYMBOL => "BUILD_INFO_FILE_DEPENDENCIES_SYMBOL",
-  BUILD_INFO_CONTEXT_DEPENDENCIES_SYMBOL => "BUILD_INFO_CONTEXT_DEPENDENCIES_SYMBOL",
-  BUILD_INFO_MISSING_DEPENDENCIES_SYMBOL => "BUILD_INFO_MISSING_DEPENDENCIES_SYMBOL",
-  BUILD_INFO_BUILD_DEPENDENCIES_SYMBOL => "BUILD_INFO_BUILD_DEPENDENCIES_SYMBOL",
-  COMMIT_CUSTOM_FIELDS_SYMBOL => "COMMIT_CUSTOM_FIELDS_SYMBOL",
+  BUILD_INFO_ASSETS_SYMBOL => "rspack.buildInfo.assets",
+  BUILD_INFO_FILE_DEPENDENCIES_SYMBOL => "rspack.buildInfo.fileDependencies",
+  BUILD_INFO_CONTEXT_DEPENDENCIES_SYMBOL => "rspack.buildInfo.contextDependencies",
+  BUILD_INFO_MISSING_DEPENDENCIES_SYMBOL => "rspack.buildInfo.missingDependencies",
+  BUILD_INFO_BUILD_DEPENDENCIES_SYMBOL => "rspack.buildInfo.buildDependencies",
+  COMMIT_CUSTOM_FIELDS_SYMBOL => "rspack.buildInfo.commitCustomFields",
 }
 
 // Record<string, Source>
@@ -89,10 +89,7 @@ impl KnownBuildInfo {
     f: impl FnOnce(&dyn rspack_core::Module) -> napi::Result<T>,
   ) -> napi::Result<T> {
     match self.module_reference.get_mut() {
-      Some(reference) => {
-        let (_, module) = reference.as_ref()?;
-        f(module)
-      }
+      Some(reference) => reference.with_ref(|_, module| f(module)),
       None => Err(napi::Error::from_reason(
         "Unable to access buildInfo. The Module has been garbage collected by JavaScript."
           .to_string(),
@@ -138,10 +135,7 @@ impl BuildInfo {
     f: impl FnOnce(&dyn rspack_core::Module) -> napi::Result<T>,
   ) -> napi::Result<T> {
     match self.module_reference.get_mut() {
-      Some(reference) => {
-        let (_, module) = reference.as_ref()?;
-        f(module)
-      }
+      Some(reference) => reference.with_ref(|_, module| f(module)),
       None => Err(napi::Error::from_reason(
         "Unable to access buildInfo. The Module has been garbage collected by JavaScript."
           .to_string(),

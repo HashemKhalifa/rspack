@@ -1,10 +1,8 @@
 use std::{
-  collections::HashSet,
   fmt,
   sync::{Arc, LazyLock, OnceLock},
 };
 
-use camino::Utf8Path;
 use regex::Regex;
 use rspack_cacheable::cacheable;
 use rspack_core::{
@@ -12,22 +10,22 @@ use rspack_core::{
   CompilationParams, CompilerThisCompilation, Context, DependencyCategory, DependencyType,
   ModuleExt, ModuleFactoryCreateData, NormalModuleCreateData, NormalModuleFactoryCreateModule,
   NormalModuleFactoryFactorize, Plugin, ResolveOptionsWithDependencyType, ResolveResult, Resolver,
-  RuntimeGlobals, RuntimeModule,
+  RuntimeGlobals, RuntimeModule, runtime_mode::RuntimeMode,
 };
 use rspack_error::{Diagnostic, Result, error};
-use rspack_fs::ReadableFileSystem;
+use rspack_hash::{RspackHash, RspackHasher};
 use rspack_hook::{plugin, plugin_hook};
 use rustc_hash::FxHashMap;
 
 use super::{
   consume_shared_module::ConsumeSharedModule,
   consume_shared_runtime_module::ConsumeSharedRuntimeModule, create_lookup_key_for_sharing,
-  strip_lookup_layer_prefix,
+  get_description_file, strip_lookup_layer_prefix,
 };
 use crate::ShareScope;
 
 #[cacheable]
-#[derive(Debug, Clone, Hash)]
+#[derive(Debug, Clone, rspack_hash::RspackHash)]
 pub struct ConsumeOptions {
   pub request: Option<String>,
   pub issuer_layer: Option<String>,
@@ -49,6 +47,15 @@ pub struct ConsumeOptions {
 pub enum ConsumeVersion {
   Version(String),
   False,
+}
+
+impl RspackHash for ConsumeVersion {
+  fn hash(&self, state: &mut RspackHasher) {
+    match self {
+      ConsumeVersion::Version(version) => version.hash(state),
+      ConsumeVersion::False => "false".hash(state),
+    }
+  }
 }
 
 impl fmt::Display for ConsumeVersion {
@@ -114,41 +121,8 @@ pub async fn resolve_matched_configs(
   }
 }
 
-pub async fn get_description_file(
-  fs: Arc<dyn ReadableFileSystem>,
-  mut dir: &Utf8Path,
-  satisfies_description_file_data: Option<impl Fn(Option<serde_json::Value>) -> bool>,
-) -> (Option<serde_json::Value>, Option<Vec<String>>) {
-  let description_filename = "package.json";
-  let mut checked_file_paths = HashSet::new();
-
-  loop {
-    let description_file = dir.join(description_filename);
-
-    let data = fs.read(&description_file).await;
-
-    if let Ok(data) = data
-      && let Ok(data) = serde_json::from_slice::<serde_json::Value>(&data)
-    {
-      if satisfies_description_file_data
-        .as_ref()
-        .is_some_and(|f| !f(Some(data.clone())))
-      {
-        checked_file_paths.insert(description_file.to_string());
-      } else {
-        return (Some(data), None);
-      }
-    }
-    if let Some(parent) = dir.parent() {
-      dir = parent;
-    } else {
-      return (None, Some(checked_file_paths.into_iter().collect()));
-    }
-  }
-}
-
 pub fn get_required_version_from_description_file(
-  data: serde_json::Value,
+  data: &serde_json::Value,
   package_name: &str,
 ) -> Option<ConsumeVersion> {
   let data = data.as_object()?;
@@ -277,15 +251,11 @@ impl ConsumeSharedPlugin {
         let (data, checked_description_file_paths) = get_description_file(
           fs,
           context.as_path(),
-          Some(|data: Option<serde_json::Value>| {
-            if let Some(data) = data {
-              let name_matches = data.get("name").and_then(|n| n.as_str()) == Some(package_name);
-              let version_matches = get_required_version_from_description_file(data, package_name)
-                .is_some_and(|version| matches!(version, ConsumeVersion::Version(_)));
-              name_matches || version_matches
-            } else {
-              false
-            }
+          Some(|data: &serde_json::Value| {
+            let name_matches = data.get("name").and_then(|n| n.as_str()) == Some(package_name);
+            let version_matches = get_required_version_from_description_file(data, package_name)
+              .is_some_and(|version| matches!(version, ConsumeVersion::Version(_)));
+            name_matches || version_matches
           }),
         )
         .await;
@@ -297,7 +267,7 @@ impl ConsumeSharedPlugin {
             // Package self-referencing
             return None;
           }
-          return get_required_version_from_description_file(data, package_name);
+          return get_required_version_from_description_file(&data, package_name);
         } else {
           if let Some(file_paths) = checked_description_file_paths
             && !file_paths.is_empty()
@@ -325,6 +295,7 @@ impl ConsumeSharedPlugin {
     context: &Context,
     request: &str,
     config: Arc<ConsumeOptions>,
+    runtime_mode: RuntimeMode,
     mut add_diagnostic: impl FnMut(Diagnostic),
   ) -> ConsumeSharedModule {
     let direct_fallback = matches!(&config.import, Some(i) if RELATIVE_REQUEST.is_match(i) | ABSOLUTE_REQUEST.is_match(i));
@@ -383,6 +354,7 @@ impl ConsumeSharedPlugin {
         eager: config.eager,
         tree_shaking_mode: config.tree_shaking_mode.clone(),
       },
+      runtime_mode,
     )
   }
 }
@@ -435,9 +407,13 @@ async fn factorize(&self, data: &mut ModuleFactoryCreateData) -> Result<Option<B
     .or_else(|| consumes.unresolved.get(&fallback_lookup))
   {
     let module = self
-      .create_consume_shared_module(&data.context, request, matched.clone(), |d| {
-        data.diagnostics.push(d)
-      })
+      .create_consume_shared_module(
+        &data.context,
+        request,
+        matched.clone(),
+        data.options.experiments.runtime_mode,
+        |d| data.diagnostics.push(d),
+      )
       .await;
     return Ok(Some(module.boxed()));
   }
@@ -471,6 +447,7 @@ async fn factorize(&self, data: &mut ModuleFactoryCreateData) -> Result<Option<B
             eager: options.eager,
             tree_shaking_mode: options.tree_shaking_mode.clone(),
           }),
+          data.options.experiments.runtime_mode,
           |d| data.diagnostics.push(d),
         )
         .await;
@@ -504,9 +481,13 @@ async fn create_module(
     .or_else(|| consumes.resolved.get(&fallback_lookup))
   {
     let module = self
-      .create_consume_shared_module(&data.context, resource, options.clone(), |d| {
-        data.diagnostics.push(d)
-      })
+      .create_consume_shared_module(
+        &data.context,
+        resource,
+        options.clone(),
+        data.options.experiments.runtime_mode,
+        |d| data.diagnostics.push(d),
+      )
       .await;
     return Ok(Some(module.boxed()));
   }

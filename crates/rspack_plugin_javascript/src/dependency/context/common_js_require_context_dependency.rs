@@ -1,6 +1,6 @@
 use rspack_cacheable::{cacheable, cacheable_dyn};
 use rspack_core::{
-  AsModuleDependency, ContextDependency, ContextOptions, Dependency, DependencyCategory,
+  AsModuleDependency, Context, ContextDependency, ContextOptions, Dependency, DependencyCategory,
   DependencyCodeGeneration, DependencyId, DependencyLocation, DependencyRange, DependencyTemplate,
   DependencyTemplateType, DependencyType, ExportsInfoArtifact, FactorizeInfo, ModuleGraph,
   ModuleGraphCacheArtifact, ReferencedSpecifier, ResourceIdentifier, TemplateContext,
@@ -19,6 +19,7 @@ pub struct CommonJsRequireContextDependency {
   loc: DependencyLocation,
   range: DependencyRange,
   value_range: Option<DependencyRange>,
+  context: Option<Context>,
   resource_identifier: ResourceIdentifier,
   options: ContextOptions,
   optional: bool,
@@ -33,12 +34,17 @@ impl CommonJsRequireContextDependency {
     range: DependencyRange,
     value_range: Option<DependencyRange>,
     optional: bool,
+    context: Option<Context>,
   ) -> Self {
-    let resource_identifier = create_resource_identifier_for_context_dependency(None, &options);
+    let resource_identifier = create_resource_identifier_for_context_dependency(
+      context.as_ref().map(|c| c.as_str()),
+      &options,
+    );
     Self {
       loc,
       range,
       value_range,
+      context,
       options,
       resource_identifier,
       optional,
@@ -49,9 +55,17 @@ impl CommonJsRequireContextDependency {
   }
 
   pub fn set_referenced_specifiers(&mut self, referenced_specifiers: Vec<ReferencedSpecifier>) {
+    if referenced_specifiers.is_empty() {
+      // If the referenced specifiers are empty, keep it as default (None), since this dependency can't eliminate by side effects optimization,
+      // so if we set it to Some(vec![]), and the dependency still executes, it will cause runtime error because the exports are all tree shaken.
+      // see test case `tests/rspack-test/configCases/cjs-tree-shaking/side-effects-free`
+      return;
+    }
     self.options.referenced_specifiers = Some(referenced_specifiers);
-    self.resource_identifier =
-      create_resource_identifier_for_context_dependency(None, &self.options);
+    self.resource_identifier = create_resource_identifier_for_context_dependency(
+      self.context.as_ref().map(|c| c.as_str()),
+      &self.options,
+    );
   }
 }
 
@@ -67,6 +81,10 @@ impl Dependency for CommonJsRequireContextDependency {
 
   fn dependency_type(&self) -> &DependencyType {
     &DependencyType::CommonJSRequireContext
+  }
+
+  fn get_context(&self) -> Option<&Context> {
+    self.context.as_ref()
   }
 
   fn range(&self) -> Option<DependencyRange> {
@@ -104,7 +122,7 @@ impl ContextDependency for CommonJsRequireContextDependency {
   }
 
   fn get_context(&self) -> Option<&str> {
-    None
+    self.context.as_ref().map(|c| c.as_str())
   }
 
   fn resource_identifier(&self) -> &str {

@@ -17,7 +17,9 @@ mod static_exports_dependency;
 
 use std::sync::Arc;
 
-pub use cached_const_dependency::{CachedConstDependency, CachedConstDependencyTemplate};
+pub use cached_const_dependency::{
+  CachedConstDependency, CachedConstDependencyPlace, CachedConstDependencyTemplate,
+};
 pub use const_dependency::{ConstDependency, ConstDependencyTemplate};
 pub use context_dependency::{AsContextDependency, ContextDependency};
 pub use context_element_dependency::ContextElementDependency;
@@ -36,7 +38,8 @@ use rspack_cacheable::{
   with::{AsPreset, AsVec},
 };
 pub use runtime_requirements_dependency::{
-  RuntimeRequirementsDependency, RuntimeRequirementsDependencyTemplate,
+  CodeGenerationRuntimeRequirementsWrite, RuntimeRequirementsDependency,
+  RuntimeRequirementsDependencyTemplate,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
@@ -46,7 +49,8 @@ use swc_core::ecma::atoms::Atom;
 use crate::{
   ConnectionState, EvaluatedInlinableValue, ExportsInfoArtifact, ExportsType,
   ExtendedReferencedExport, ModuleGraph, ModuleGraphCacheArtifact, ModuleGraphConnection,
-  ModuleIdentifier, ReferencedExport, RuntimeSpec, create_exports_object_referenced,
+  ModuleIdentifier, ReferencedExport, RuntimeSpec, SideEffectsStateArtifact,
+  create_exports_object_referenced,
 };
 
 #[derive(Debug, Clone)]
@@ -137,8 +141,30 @@ pub trait DependencyConditionFn: Sync + Send {
     runtime: Option<&RuntimeSpec>,
     module_graph: &ModuleGraph,
     module_graph_cache: &ModuleGraphCacheArtifact,
+    side_effects_state_artifact: &SideEffectsStateArtifact,
     exports_info_artifact: &ExportsInfoArtifact,
   ) -> ConnectionState;
+
+  fn is_connection_active(
+    &self,
+    conn: &ModuleGraphConnection,
+    runtime: Option<&RuntimeSpec>,
+    module_graph: &ModuleGraph,
+    module_graph_cache: &ModuleGraphCacheArtifact,
+    side_effects_state_artifact: &SideEffectsStateArtifact,
+    exports_info_artifact: &ExportsInfoArtifact,
+  ) -> bool {
+    self
+      .get_connection_state(
+        conn,
+        runtime,
+        module_graph,
+        module_graph_cache,
+        side_effects_state_artifact,
+        exports_info_artifact,
+      )
+      .is_true()
+  }
 }
 
 #[derive(Clone)]
@@ -155,6 +181,7 @@ impl DependencyCondition {
     runtime: Option<&RuntimeSpec>,
     mg: &ModuleGraph,
     module_graph_cache: &ModuleGraphCacheArtifact,
+    side_effects_state_artifact: &SideEffectsStateArtifact,
     exports_info_artifact: &ExportsInfoArtifact,
   ) -> ConnectionState {
     self.0.get_connection_state(
@@ -162,6 +189,26 @@ impl DependencyCondition {
       runtime,
       mg,
       module_graph_cache,
+      side_effects_state_artifact,
+      exports_info_artifact,
+    )
+  }
+
+  pub fn is_connection_active(
+    &self,
+    connection: &ModuleGraphConnection,
+    runtime: Option<&RuntimeSpec>,
+    mg: &ModuleGraph,
+    module_graph_cache: &ModuleGraphCacheArtifact,
+    side_effects_state_artifact: &SideEffectsStateArtifact,
+    exports_info_artifact: &ExportsInfoArtifact,
+  ) -> bool {
+    self.0.is_connection_active(
+      connection,
+      runtime,
+      mg,
+      module_graph_cache,
+      side_effects_state_artifact,
       exports_info_artifact,
     )
   }
@@ -174,7 +221,7 @@ impl std::fmt::Debug for DependencyCondition {
 }
 
 #[rspack_cacheable::cacheable]
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
 pub struct ImportAttributes(FxHashMap<String, String>);
 
 impl FromIterator<(String, String)> for ImportAttributes {
@@ -186,6 +233,10 @@ impl FromIterator<(String, String)> for ImportAttributes {
 impl ImportAttributes {
   pub fn get(&self, k: &str) -> Option<&str> {
     self.0.get(k).map(|v| v.as_str())
+  }
+
+  pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+    self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
   }
 
   pub fn insert(&mut self, k: String, v: String) -> Option<String> {
@@ -205,6 +256,10 @@ pub enum ImportPhase {
 impl ImportPhase {
   pub fn is_defer(&self) -> bool {
     matches!(self, ImportPhase::Defer)
+  }
+
+  pub fn is_source(&self) -> bool {
+    matches!(self, ImportPhase::Source)
   }
 
   pub fn as_str(&self) -> &'static str {
@@ -256,6 +311,7 @@ impl ReferencedSpecifier {
 pub fn create_referenced_exports_by_referenced_specifiers(
   referenced_specifiers: &[ReferencedSpecifier],
   exports_type: ExportsType,
+  is_json: bool,
 ) -> Vec<ExtendedReferencedExport> {
   let mut refs = vec![];
   for ReferencedSpecifier {
@@ -267,12 +323,13 @@ pub fn create_referenced_exports_by_referenced_specifiers(
     let mut names = names.as_slice();
     let mut namespace_object_as_context = *namespace_object_as_context;
 
-    // Force enable namespace object as context for DefaultOnly and DefaultWithNamed
-    // because it's more common in cjs and json
+    // Force enable namespace object as context for json module, it's a common case:
+    // import json from "./array.json"; json.map(d => d * 2);
     if matches!(
       exports_type,
       ExportsType::DefaultOnly | ExportsType::DefaultWithNamed
-    ) {
+    ) && is_json
+    {
       namespace_object_as_context = true;
     }
 

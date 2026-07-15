@@ -1,32 +1,34 @@
-"use strict";
+'use strict';
 
 /** @type {import("@rspack/core").Configuration} */
 module.exports = {
-	target: "browserslist:maintained node versions",
-	plugins: [
-		compiler => {
-			compiler.hooks.compilation.tap("Test", compilation => {
-				expect(compilation.outputOptions.environment).toMatchInlineSnapshot(`
-					Object {
-					  arrowFunction: true,
-					  asyncFunction: true,
-					  bigIntLiteral: true,
-					  const: true,
-					  destructuring: true,
-					  document: false,
-					  dynamicImport: true,
-					  dynamicImportInWorker: false,
-					  forOf: true,
-					  globalThis: true,
-					  importMetaDirnameAndFilename: false,
-					  methodShorthand: true,
-					  module: true,
-					  nodePrefixForCoreModules: true,
-					  optionalChaining: true,
-					  templateLiteral: true,
-					}
-				`);
-				expect(compilation.options.externalsPresets).toMatchInlineSnapshot(`
+  target: 'browserslist:maintained node versions',
+  plugins: [
+    (compiler) => {
+      compiler.hooks.compilation.tap('Test', (compilation) => {
+        expect(compilation.outputOptions.environment).toMatchInlineSnapshot(`
+          Object {
+            arrowFunction: true,
+            asyncFunction: true,
+            bigIntLiteral: true,
+            computedProperty: true,
+            const: true,
+            destructuring: true,
+            document: false,
+            dynamicImport: true,
+            dynamicImportInWorker: false,
+            forOf: true,
+            globalThis: true,
+            importMetaDirnameAndFilename: false,
+            logicalAssignment: true,
+            methodShorthand: true,
+            module: true,
+            nodePrefixForCoreModules: true,
+            optionalChaining: true,
+            templateLiteral: true,
+          }
+        `);
+        expect(compilation.options.externalsPresets).toMatchInlineSnapshot(`
 			Object {
 			  electron: false,
 			  electronMain: false,
@@ -37,7 +39,7 @@ module.exports = {
 			  web: false,
 			}
 		`);
-			});
-		}
-	]
+      });
+    },
+  ],
 };

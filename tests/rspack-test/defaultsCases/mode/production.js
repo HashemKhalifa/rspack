@@ -8,6 +8,9 @@ module.exports = {
 			+ Received
 
 			@@ ... @@
+			-     "pureFunctions": false,
+			+     "pureFunctions": true,
+			@@ ... @@
 			-   "mode": "none",
 			+   "mode": "production",
 			@@ ... @@
@@ -38,9 +41,11 @@ module.exports = {
 			-     "sideEffects": "flag",
 			+     "sideEffects": true,
 			@@ ... @@
+			-       "enforceSizeThreshold": 30000,
 			-       "hidePathInfo": false,
 			-       "maxAsyncRequests": Infinity,
 			-       "maxInitialRequests": Infinity,
+			+       "enforceSizeThreshold": 50000,
 			+       "hidePathInfo": true,
 			+       "maxAsyncRequests": 30,
 			+       "maxInitialRequests": 30,
@@ -56,8 +61,8 @@ module.exports = {
 			-   "performance": false,
 			+   "performance": Object {
 			+     "hints": "warning",
-			+     "maxAssetSize": 250000,
-			+     "maxEntrypointSize": 250000,
+			+     "maxAssetSize": 307200,
+			+     "maxEntrypointSize": 512000,
 			+   },
 		`)
 };

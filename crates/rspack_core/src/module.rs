@@ -2,8 +2,6 @@ use std::{
   any::Any,
   borrow::Cow,
   fmt::{Debug, Display, Formatter},
-  hash::Hash,
-  rc::Rc,
   sync::Arc,
 };
 
@@ -16,30 +14,31 @@ use rspack_cacheable::{
 use rspack_collections::{Identifiable, Identifier, IdentifierMap, IdentifierSet};
 use rspack_error::{Diagnosable, Result};
 use rspack_fs::ReadableFileSystem;
-use rspack_hash::RspackHashDigest;
+use rspack_hash::{RspackHash, RspackHashDigest, RspackHasher, write_u64_hex};
 use rspack_paths::ArcPathSet;
 use rspack_sources::BoxSource;
 use rspack_util::{
   atom::Atom,
-  ext::{AsAny, DynHash},
-  fx_hash::FxIndexMap,
+  ext::AsAny,
+  fx_hash::{FxIndexMap, FxIndexSet},
   source_map::ModuleSourceMapConfig,
 };
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use serde::Serialize;
+use smol_str::SmolStr;
 use swc_core::atoms::Wtf8Atom;
 
 use crate::{
   AsyncDependenciesBlock, BindingCell, BoxDependency, BoxDependencyTemplate, BoxModuleDependency,
   ChunkGraph, ChunkUkey, CodeGenerationResult, CollectedTypeScriptInfo, Compilation,
   CompilationAsset, CompilationId, CompilerId, CompilerOptions, ConcatenationScope,
-  ConnectionState, Context, ContextModule, DependenciesBlock, DependencyId, ExportProvided,
-  ExportsInfoArtifact, ExternalModule, GetTargetResult, ModuleCodeTemplate, ModuleGraph,
-  ModuleGraphCacheArtifact, ModuleLayer, ModuleType, NormalModule, OptimizationBailoutItem,
-  PrefetchExportsInfoMode, RawModule, Resolve, ResolverFactory, RuntimeSpec, SelfModule,
-  SharedPluginDriver, SourceType, concatenated_module::ConcatenatedModule,
-  dependencies_block::dependencies_block_update_hash, get_target,
-  value_cache_versions::ValueCacheVersions,
+  ConnectionState, Context, ContextModule, CssExportType, DependenciesBlock, DependencyId,
+  ExportProvided, ExportsInfoArtifact, ExternalModule, Filename, GetTargetResult, ImportPhase,
+  ModuleCodeTemplate, ModuleGraph, ModuleGraphCacheArtifact, ModuleLayer, ModuleType, NormalModule,
+  OptimizationBailoutItem, RawModule, Resolve, ResolverFactory, RuntimeSpec, SelfModule,
+  SharedPluginDriver, SideEffectsStateArtifact, SourceType,
+  concatenated_module::ConcatenatedModule, dependencies_block::dependencies_block_update_hash,
+  get_target, value_cache_versions::ValueCacheVersions,
 };
 
 pub struct BuildContext {
@@ -78,10 +77,185 @@ pub struct RscMeta {
 
   #[cacheable(with=AsVec<AsPreset>)]
   pub client_refs: Vec<Wtf8Atom>,
+
+  /// Whether this server component uses `import.meta.rspackRsc`.
+  ///
+  /// RSC client manifest collection uses this to find the module's transitive
+  /// CSS dependencies, so they can be exposed through `entryCssFiles` and
+  /// rendered by `loadCss()`.
+  pub import_meta_rsc: bool,
+
   pub is_cjs: bool,
 
   #[cacheable(with=AsMap<AsPreset, AsPreset>)]
   pub action_ids: FxIndexMap<Atom, Atom>,
+}
+
+#[cacheable]
+#[derive(Debug, Clone)]
+pub enum CanonicalizedDataUrlOption {
+  Source,
+  Bytes,
+  Asset(bool),
+}
+
+impl CanonicalizedDataUrlOption {
+  pub fn is_source(&self) -> bool {
+    matches!(self, Self::Source)
+  }
+
+  pub fn is_bytes(&self) -> bool {
+    matches!(self, Self::Bytes)
+  }
+
+  pub fn is_inline(&self) -> bool {
+    matches!(self, Self::Asset(true))
+  }
+
+  pub fn is_resource(&self) -> bool {
+    matches!(self, Self::Asset(false))
+  }
+}
+
+#[cacheable]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CssExport {
+  #[cacheable(with=AsPreset)]
+  pub ident: SmolStr,
+  #[cacheable(with=AsOption<AsPreset>)]
+  pub from: Option<SmolStr>,
+  pub id: Option<DependencyId>,
+  #[cacheable(with=AsPreset)]
+  pub orig_name: SmolStr,
+}
+
+pub type CssExports = FxIndexMap<SmolStr, FxIndexSet<CssExport>>;
+pub type CssLocalNames = HashMap<SmolStr, SmolStr>;
+
+#[cacheable]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CssLayer {
+  Anonymous,
+  Named(#[cacheable(with=AsPreset)] SmolStr),
+}
+
+#[cacheable]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct CssModuleRenderCondition {
+  #[cacheable(with=AsOption<AsPreset>)]
+  pub media: Option<SmolStr>,
+  #[cacheable(with=AsOption<AsPreset>)]
+  pub supports: Option<SmolStr>,
+  pub layer: Option<CssLayer>,
+}
+
+impl CssModuleRenderCondition {
+  pub fn new(media: Option<SmolStr>, supports: Option<SmolStr>, layer: Option<CssLayer>) -> Self {
+    Self {
+      media,
+      supports,
+      layer,
+    }
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.media.is_none() && self.supports.is_none() && self.layer.is_none()
+  }
+}
+
+pub fn iter_css_module_render_conditions<'a>(
+  inherited_render_conditions: &'a [CssModuleRenderCondition],
+  render_condition: &'a CssModuleRenderCondition,
+) -> impl Iterator<Item = &'a CssModuleRenderCondition> {
+  inherited_render_conditions
+    .iter()
+    .chain(std::iter::once(render_condition))
+    .filter(|condition| !condition.is_empty())
+}
+
+pub fn css_module_render_conditions_identifier<'a>(
+  conditions: impl IntoIterator<Item = &'a CssModuleRenderCondition>,
+) -> Option<String> {
+  let mut key = String::new();
+  let mut count = 0;
+  for condition in conditions
+    .into_iter()
+    .filter(|condition| !condition.is_empty())
+  {
+    count += 1;
+    let layer = match &condition.layer {
+      Some(CssLayer::Anonymous) => "<anonymous>",
+      Some(CssLayer::Named(layer)) => layer.as_str(),
+      None => "",
+    };
+    push_css_module_identifier_part(&mut key, layer);
+    push_css_module_identifier_part(&mut key, condition.supports.as_deref().unwrap_or_default());
+    push_css_module_identifier_part(&mut key, condition.media.as_deref().unwrap_or_default());
+  }
+
+  if count == 0 {
+    None
+  } else {
+    Some(format!("conditions={count}{key}"))
+  }
+}
+
+pub fn push_css_module_identifier_part(identifier: &mut String, value: &str) {
+  identifier.push('|');
+  identifier.push_str(&value.len().to_string());
+  identifier.push(':');
+  identifier.push_str(value);
+}
+
+#[cacheable]
+#[derive(Debug, Clone, Default)]
+pub struct CssBuildInfo {
+  pub export_type: Option<CssExportType>,
+  pub has_charset: bool,
+  pub css_import_dependency: bool,
+  #[cacheable(with=AsMap<AsPreset, AsVec>)]
+  pub exports: CssExports,
+  #[cacheable(with=AsMap<AsPreset, AsPreset>)]
+  pub local_names: CssLocalNames,
+  /// Conditions inherited from parent CSS modules.
+  ///
+  /// Webpack stores the current module condition before inherited conditions.
+  /// Rspack stores inherited conditions from outermost to innermost
+  pub inherited_render_conditions: Vec<CssModuleRenderCondition>,
+  pub render_condition: CssModuleRenderCondition,
+}
+
+impl CssBuildInfo {
+  pub fn exports(&self) -> Option<&CssExports> {
+    (!self.exports.is_empty()).then_some(&self.exports)
+  }
+
+  pub fn local_names(&self) -> Option<&CssLocalNames> {
+    (!self.local_names.is_empty()).then_some(&self.local_names)
+  }
+
+  pub fn render_conditions(&self) -> impl Iterator<Item = &CssModuleRenderCondition> {
+    iter_css_module_render_conditions(&self.inherited_render_conditions, &self.render_condition)
+  }
+
+  pub fn has_render_conditions(&self) -> bool {
+    self.render_conditions().next().is_some()
+  }
+}
+
+#[cacheable]
+#[derive(Debug, Clone)]
+pub struct IsolatedDts {
+  pub resource_path: String,
+  pub code: String,
+  pub references: Vec<String>,
+}
+
+#[cacheable]
+#[derive(Debug, Clone)]
+pub struct AssetBuildInfo {
+  pub data_url: CanonicalizedDataUrlOption,
+  pub filename: Option<Filename>,
 }
 
 #[cacheable]
@@ -104,6 +278,10 @@ pub struct BuildInfo {
   pub need_create_require: bool,
   #[cacheable(with=AsOption<AsPreset>)]
   pub json_data: Option<JsonValue>,
+  pub asset: Option<Box<AssetBuildInfo>>,
+  pub css: Option<Box<CssBuildInfo>>,
+  #[cacheable(with=AsOption<AsVec<AsPreset>>)]
+  pub side_effects_free: Option<HashSet<Atom>>,
   #[cacheable(with=AsOption<AsVec<AsPreset>>)]
   pub top_level_declarations: Option<HashSet<Atom>>,
   pub module_concatenation_bailout: Option<String>,
@@ -112,10 +290,14 @@ pub struct BuildInfo {
   pub inline_exports: bool,
   pub collected_typescript_info: Option<CollectedTypeScriptInfo>,
   pub rsc: Option<RscMeta>,
+  pub import_phase: ImportPhase,
+  pub isolated_dts: Option<Box<IsolatedDts>>,
   /// Stores external fields from the JS side (Record<string, any>),
   /// while other properties are stored in KnownBuildInfo.
   #[cacheable(with=AsPreset)]
   pub extras: serde_json::Map<String, serde_json::Value>,
+  #[cacheable(with=AsVec)]
+  pub deferred_pure_checks: HashSet<DeferredPureCheck>,
 }
 
 impl Default for BuildInfo {
@@ -135,6 +317,9 @@ impl Default for BuildInfo {
       all_star_exports: Vec::default(),
       need_create_require: false,
       json_data: None,
+      asset: None,
+      css: None,
+      side_effects_free: None,
       top_level_declarations: None,
       module_concatenation_bailout: None,
       assets: Default::default(),
@@ -142,13 +327,16 @@ impl Default for BuildInfo {
       inline_exports: false,
       collected_typescript_info: None,
       rsc: None,
+      import_phase: ImportPhase::Evaluation,
+      isolated_dts: None,
       extras: Default::default(),
+      deferred_pure_checks: HashSet::default(),
     }
   }
 }
 
 #[cacheable]
-#[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BuildMetaExportsType {
   #[default]
@@ -159,17 +347,44 @@ pub enum BuildMetaExportsType {
   Dynamic,
 }
 
+impl From<&str> for BuildMetaExportsType {
+  fn from(value: &str) -> Self {
+    match value {
+      "unset" => BuildMetaExportsType::Unset,
+      "default" => BuildMetaExportsType::Default,
+      "namespace" => BuildMetaExportsType::Namespace,
+      "flagged" => BuildMetaExportsType::Flagged,
+      "dynamic" => BuildMetaExportsType::Dynamic,
+      _ => unreachable!(),
+    }
+  }
+}
+
 impl Display for BuildMetaExportsType {
   fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    let d = match self {
+    f.write_str(self.as_str())
+  }
+}
+
+impl BuildMetaExportsType {
+  fn as_str(&self) -> &'static str {
+    match self {
+      BuildMetaExportsType::Unset => "unset",
+      BuildMetaExportsType::Default => "default",
+      BuildMetaExportsType::Namespace => "namespace",
+      BuildMetaExportsType::Flagged => "flagged",
+      BuildMetaExportsType::Dynamic => "dynamic",
+    }
+  }
+
+  pub fn description(&self) -> &'static str {
+    match self {
       BuildMetaExportsType::Unset => "unknown exports (runtime-defined)",
       BuildMetaExportsType::Default => "default exports",
       BuildMetaExportsType::Namespace => "namespace exports",
       BuildMetaExportsType::Flagged => "flagged exports",
       BuildMetaExportsType::Dynamic => "dynamic exports",
-    };
-
-    f.write_str(d)
+    }
   }
 }
 
@@ -181,24 +396,61 @@ pub enum ExportsType {
   Dynamic,
 }
 
+impl Display for ExportsType {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+impl ExportsType {
+  fn as_str(&self) -> &'static str {
+    match self {
+      ExportsType::DefaultOnly => "default-only",
+      ExportsType::Namespace => "namespace",
+      ExportsType::DefaultWithNamed => "default-with-named",
+      ExportsType::Dynamic => "dynamic",
+    }
+  }
+}
+
 #[cacheable]
-#[derive(Debug, Default, Clone, Copy, Hash, Serialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BuildMetaDefaultObject {
   #[default]
   False,
   Redirect,
-  RedirectWarn {
-    // Whether to ignore the warning, should use false for most cases
-    // Only ignore the cases that do not follow the standards but are
-    // widely used by the community, making it difficult to migrate.
-    // For example, JSON named exports.
-    ignore: bool,
-  },
+  RedirectWarn,
+}
+
+impl Display for BuildMetaDefaultObject {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+impl BuildMetaDefaultObject {
+  fn as_str(&self) -> &'static str {
+    match self {
+      BuildMetaDefaultObject::False => "false",
+      BuildMetaDefaultObject::Redirect => "redirect",
+      BuildMetaDefaultObject::RedirectWarn => "redirect-warn",
+    }
+  }
 }
 
 #[cacheable]
-#[derive(Debug, Default, Clone, Copy, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DeferredPureCheck {
+  #[cacheable(with=AsPreset)]
+  pub atom: Atom,
+  pub dep_id: DependencyId,
+  pub start: u32,
+  pub end: u32,
+}
+
+#[cacheable]
+#[derive(Debug, Default, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ModuleArgument {
   #[default]
@@ -206,8 +458,23 @@ pub enum ModuleArgument {
   RspackModule,
 }
 
+impl Display for ModuleArgument {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+impl ModuleArgument {
+  fn as_str(&self) -> &'static str {
+    match self {
+      ModuleArgument::Module => "module",
+      ModuleArgument::RspackModule => "__webpack_module__",
+    }
+  }
+}
+
 #[cacheable]
-#[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ExportsArgument {
   #[default]
@@ -215,20 +482,154 @@ pub enum ExportsArgument {
   RspackExports,
 }
 
+impl Display for ExportsArgument {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+impl ExportsArgument {
+  fn as_str(&self) -> &'static str {
+    match self {
+      ExportsArgument::Exports => "exports",
+      ExportsArgument::RspackExports => "__webpack_exports__",
+    }
+  }
+}
+
 #[cacheable]
-#[derive(Debug, Default, Clone, Hash, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, rspack_hash::RspackHash)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildMeta {
-  pub strict_esm_module: bool,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub strict_esm_module: Option<bool>,
   // same as is_async https://github.com/webpack/webpack/blob/3919c844eca394d73ca930e4fc5506fb86e2b094/lib/Module.js#L107
-  pub has_top_level_await: bool,
-  pub esm: bool,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub has_top_level_await: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub esm: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub is_css_module: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub need_id_in_concatenation: Option<bool>,
   pub exports_type: BuildMetaExportsType,
-  pub default_object: BuildMetaDefaultObject,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub default_object: Option<BuildMetaDefaultObject>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub side_effect_free: Option<bool>,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  pub exports_final_name: Option<Vec<(String, String)>>,
+}
+
+impl BuildMeta {
+  pub fn strict_esm_module(&self) -> bool {
+    self.strict_esm_module.unwrap_or(false)
+  }
+
+  pub fn has_top_level_await(&self) -> bool {
+    self.has_top_level_await.unwrap_or(false)
+  }
+
+  pub fn esm(&self) -> bool {
+    self.esm.unwrap_or(false)
+  }
+
+  pub fn is_css_module(&self) -> bool {
+    self.is_css_module.unwrap_or(false)
+  }
+
+  pub fn need_id_in_concatenation(&self) -> bool {
+    self.need_id_in_concatenation.unwrap_or(false)
+  }
+
+  pub fn exports_type(&self) -> BuildMetaExportsType {
+    self.exports_type
+  }
+
+  pub fn default_object(&self) -> BuildMetaDefaultObject {
+    self.default_object.unwrap_or(BuildMetaDefaultObject::False)
+  }
+
+  pub fn side_effect_free(&self) -> bool {
+    self.side_effect_free.unwrap_or(false)
+  }
+
+  pub fn set_strict_esm_module(&mut self, value: bool) {
+    self.strict_esm_module = Some(value);
+  }
+
+  pub fn set_has_top_level_await(&mut self, value: bool) {
+    self.has_top_level_await = Some(value);
+  }
+
+  pub fn set_esm(&mut self, value: bool) {
+    self.esm = Some(value);
+  }
+
+  pub fn set_is_css_module(&mut self, value: bool) {
+    self.is_css_module = Some(value);
+  }
+
+  pub fn set_need_id_in_concatenation(&mut self, value: bool) {
+    self.need_id_in_concatenation = Some(value);
+  }
+
+  pub fn set_exports_type(&mut self, value: BuildMetaExportsType) {
+    self.exports_type = value;
+  }
+
+  pub fn clear_exports_type(&mut self) {
+    self.exports_type = BuildMetaExportsType::Unset;
+  }
+
+  pub fn set_default_object(&mut self, value: BuildMetaDefaultObject) {
+    self.default_object = Some(value);
+  }
+
+  pub fn set_side_effect_free(&mut self, value: bool) {
+    self.side_effect_free = Some(value);
+  }
+
+  pub fn with_exports_type(mut self, value: BuildMetaExportsType) -> Self {
+    self.set_exports_type(value);
+    self
+  }
+
+  pub fn with_default_object(mut self, value: BuildMetaDefaultObject) -> Self {
+    self.set_default_object(value);
+    self
+  }
+}
+
+impl RspackHash for BuildMetaExportsType {
+  fn hash(&self, state: &mut RspackHasher) {
+    if matches!(self, BuildMetaExportsType::Unset) {
+      return;
+    }
+    self.as_str().hash(state);
+  }
+}
+
+impl RspackHash for ExportsType {
+  fn hash(&self, state: &mut RspackHasher) {
+    self.as_str().hash(state);
+  }
+}
+
+impl RspackHash for BuildMetaDefaultObject {
+  fn hash(&self, state: &mut RspackHasher) {
+    self.as_str().hash(state);
+  }
+}
+
+impl RspackHash for ModuleArgument {
+  fn hash(&self, state: &mut RspackHasher) {
+    self.as_str().hash(state);
+  }
+}
+
+impl RspackHash for ExportsArgument {
+  fn hash(&self, state: &mut RspackHasher) {
+    self.as_str().hash(state);
+  }
 }
 
 // webpack build info
@@ -335,7 +736,7 @@ pub trait Module:
   }
 
   fn get_strict_esm_module(&self) -> bool {
-    self.build_meta().strict_esm_module
+    self.build_meta().strict_esm_module()
   }
 
   /// The actual code generation of the module, which will be called by the `Compilation`.
@@ -419,6 +820,7 @@ pub trait Module:
     &self,
     _module_graph: &ModuleGraph,
     _module_graph_cache: &ModuleGraphCacheArtifact,
+    _side_effects_state_artifact: &SideEffectsStateArtifact,
     _module_chain: &mut IdentifierSet,
     _connection_state_cache: &mut IdentifierMap<ConnectionState>,
   ) -> ConnectionState {
@@ -444,8 +846,8 @@ fn get_exports_type_impl(
   exports_info_artifact: &ExportsInfoArtifact,
   strict: bool,
 ) -> ExportsType {
-  let export_type = &build_meta.exports_type;
-  let default_object = &build_meta.default_object;
+  let export_type = build_meta.exports_type();
+  let default_object = build_meta.default_object();
   match export_type {
     BuildMetaExportsType::Flagged => {
       if strict {
@@ -457,7 +859,7 @@ fn get_exports_type_impl(
     BuildMetaExportsType::Namespace => ExportsType::Namespace,
     BuildMetaExportsType::Default => match default_object {
       BuildMetaDefaultObject::Redirect => ExportsType::DefaultWithNamed,
-      BuildMetaDefaultObject::RedirectWarn { .. } => {
+      BuildMetaDefaultObject::RedirectWarn => {
         if strict {
           ExportsType::DefaultOnly
         } else {
@@ -470,21 +872,21 @@ fn get_exports_type_impl(
       if strict {
         ExportsType::DefaultWithNamed
       } else {
-        fn handle_default(default_object: &BuildMetaDefaultObject) -> ExportsType {
+        fn handle_default(default_object: BuildMetaDefaultObject) -> ExportsType {
           match default_object {
             BuildMetaDefaultObject::Redirect => ExportsType::DefaultWithNamed,
-            BuildMetaDefaultObject::RedirectWarn { .. } => ExportsType::DefaultWithNamed,
+            BuildMetaDefaultObject::RedirectWarn => ExportsType::DefaultWithNamed,
             _ => ExportsType::DefaultOnly,
           }
         }
 
         let name = Atom::from("__esModule");
-        let exports_info = exports_info_artifact
-          .get_prefetched_exports_info_optional(&identifier, PrefetchExportsInfoMode::Default);
-        if let Some(export_info) = exports_info
-          .as_ref()
-          .map(|info| info.get_read_only_export_info(&name))
-        {
+        let exports_info = exports_info_artifact.get_exports_info_optional(&identifier);
+        if let Some(export_info) = exports_info.as_ref().map(|info| {
+          info
+            .as_data(exports_info_artifact)
+            .get_read_only_export_info(&name)
+        }) {
           if matches!(export_info.provided(), Some(ExportProvided::NotProvided)) {
             handle_default(default_object)
           } else {
@@ -492,7 +894,7 @@ fn get_exports_type_impl(
               export_info,
               mg,
               exports_info_artifact,
-              Rc::new(|_| true),
+              &|_| true,
               &mut Default::default(),
             ) else {
               return ExportsType::Dynamic;
@@ -510,7 +912,7 @@ fn get_exports_type_impl(
             {
               let Some(target_exports_type) = mg
                 .module_by_identifier(&target.module)
-                .map(|m| m.build_meta().exports_type)
+                .map(|m| m.build_meta().exports_type())
               else {
                 return ExportsType::Dynamic;
               };
@@ -543,14 +945,15 @@ fn get_exports_type_impl(
 
 pub fn module_update_hash(
   module: &dyn Module,
-  hasher: &mut dyn std::hash::Hasher,
+  hasher: &mut RspackHasher,
   compilation: &Compilation,
   runtime: Option<&RuntimeSpec>,
 ) {
   let chunk_graph = &compilation.build_chunk_graph_artifact.chunk_graph;
-  chunk_graph
-    .get_module_graph_hash(module, compilation, runtime)
-    .dyn_hash(hasher);
+  write_u64_hex(
+    chunk_graph.get_module_graph_hash(module, compilation, runtime),
+    hasher,
+  );
   if let Some(deps) = module.get_presentational_dependencies() {
     for dep in deps {
       dep.update_hash(hasher, compilation, runtime);

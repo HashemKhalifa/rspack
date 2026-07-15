@@ -1,7 +1,9 @@
 use rspack_core::{
-  RuntimeModule, RuntimeModuleGenerateContext, RuntimeTemplate, RuntimeVariable,
-  impl_runtime_module,
+  Compilation, RuntimeGlobals, RuntimeGlobalsRenderMode, RuntimeModule,
+  RuntimeModuleGenerateContext, RuntimeTemplate, RuntimeVariable, impl_runtime_module,
 };
+
+static ASYNC_MODULE_TEMPLATE: &str = include_str!("runtime/async_module.ejs");
 
 #[impl_runtime_module]
 #[derive(Debug)]
@@ -20,18 +22,35 @@ impl RuntimeModule for AsyncRuntimeModule {
     context: &RuntimeModuleGenerateContext<'_>,
   ) -> rspack_error::Result<String> {
     let runtime_template = context.runtime_template;
+    let uses_lexical_runtime_globals = match runtime_template.render_mode() {
+      RuntimeGlobalsRenderMode::RspackLexical => true,
+      RuntimeGlobalsRenderMode::Webpack | RuntimeGlobalsRenderMode::RspackContext => false,
+    };
     runtime_template.render(
-      &self.id,
+      self.id(),
       Some(serde_json::json!({
         "_module_cache": runtime_template.render_runtime_variable(&RuntimeVariable::ModuleCache),
+        "_uses_lexical_runtime_globals": uses_lexical_runtime_globals,
       })),
     )
   }
 
   fn template(&self) -> Vec<(String, String)> {
-    vec![(
-      self.id.to_string(),
-      include_str!("runtime/async_module.ejs").to_string(),
-    )]
+    vec![(self.id().to_string(), ASYNC_MODULE_TEMPLATE.to_string())]
+  }
+  fn runtime_requirements(
+    &self,
+    _compilation: &Compilation,
+  ) -> rspack_core::RuntimeModuleRuntimeRequirements {
+    rspack_core::RuntimeModuleRuntimeRequirements {
+      dependencies: { RuntimeGlobals::REQUIRE | RuntimeGlobals::MODULE_CACHE },
+      define: {
+        RuntimeGlobals::ASYNC_MODULE
+          | RuntimeGlobals::ASYNC_MODULE_EXPORT_SYMBOL
+          | RuntimeGlobals::DEFERRED_MODULES_ASYNC_TRANSITIVE_DEPENDENCIES
+          | RuntimeGlobals::DEFERRED_MODULES_ASYNC_TRANSITIVE_DEPENDENCIES_SYMBOL
+      },
+      ..Default::default()
+    }
   }
 }

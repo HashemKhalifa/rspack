@@ -1,15 +1,17 @@
 use rspack_core::ConstDependency;
+use swc_experimental_ecma_ast::ThisExpr;
 
 use super::JavascriptParserPlugin;
 use crate::visitors::JavascriptParser;
 
 pub struct ESMTopLevelThisParserPlugin;
 
-impl JavascriptParserPlugin for ESMTopLevelThisParserPlugin {
+#[rspack_macros::implemented_javascript_parser_hooks]
+impl<'p, 'a> JavascriptParserPlugin<'p, 'a> for ESMTopLevelThisParserPlugin {
   fn this(
     &self,
-    parser: &mut JavascriptParser,
-    expr: &swc_core::ecma::ast::ThisExpr,
+    parser: &mut JavascriptParser<'p>,
+    expr: &ThisExpr,
     _for_name: &str,
   ) -> Option<bool> {
     (parser.is_esm && parser.is_top_level_this()).then(|| {

@@ -15,20 +15,18 @@ on:
 jobs:
   lint:
     name: Lint and format
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_LINUX_MINI_RUNNER || '"ubuntu-latest"') }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Pnpm Setup
         uses: ./.github/actions/pnpm/setup
 
       - name: Pnpm Install
-        uses: ./.github/actions/pnpm/install-dependencies
+        run: pnpm i
 
       - name: Lint js
-        run: |
-          pnpm run lint-ci:js
-          pnpm run lint:type
+        run: pnpm run lint-ci:js
 
       - name: Prettier
         run: pnpm run format-ci:js
@@ -40,6 +38,6 @@ jobs:
         run: pnpm --dir website run check:spell
 
       - name: Typos Check
-        uses: crate-ci/typos@bb4666ad77b539a6b4ce4eda7ebb6de553704021 # v1.42.0
+        uses: crate-ci/typos@37bb98842b0d8c4ffebdb75301a13db0267cef89 # v1.47.2
         with:
           files: .

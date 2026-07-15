@@ -1,6 +1,8 @@
 mod hook;
+mod javascript_parser_plugin_hooks;
 mod merge;
 mod plugin;
+mod rspack_hash;
 mod runtime_module;
 mod source_map_config;
 
@@ -39,6 +41,14 @@ pub fn plugin_hook(
   plugin::expand_fn(args, input)
 }
 
+#[proc_macro_attribute]
+pub fn implemented_javascript_parser_hooks(
+  args: proc_macro::TokenStream,
+  tokens: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+  javascript_parser_plugin_hooks::expand(args, tokens)
+}
+
 #[proc_macro]
 pub fn define_hook(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let input = syn::parse_macro_input!(input as hook::DefineHookInput);
@@ -53,6 +63,17 @@ pub fn define_hook(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 pub fn merge_from_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
   let input = syn::parse_macro_input!(input as syn::DeriveInput);
   let output = merge::expand_merge_from_derive(input);
+  match output {
+    syn::Result::Ok(tt) => tt,
+    syn::Result::Err(err) => err.to_compile_error(),
+  }
+  .into()
+}
+
+#[proc_macro_derive(RspackHash, attributes(rspack_hash))]
+pub fn rspack_hash_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+  let input = syn::parse_macro_input!(input as syn::DeriveInput);
+  let output = rspack_hash::expand_rspack_hash_derive(input);
   match output {
     syn::Result::Ok(tt) => tt,
     syn::Result::Err(err) => err.to_compile_error(),

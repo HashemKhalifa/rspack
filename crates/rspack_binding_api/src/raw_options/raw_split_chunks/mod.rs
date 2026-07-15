@@ -10,7 +10,7 @@ use napi::{Either, JsString, bindgen_prelude::Either3};
 use napi_derive::napi;
 use raw_split_chunk_name::{RawChunkOptionName, normalize_raw_chunk_name};
 use rspack_core::{DEFAULT_DELIMITER, Filename, SourceType};
-use rspack_napi::{string::JsStringExt, threadsafe_function::ThreadsafeFunction};
+use rspack_napi::string::JsStringExt;
 use rspack_plugin_split_chunks::ChunkNameGetter;
 use rspack_regex::RspackRegex;
 
@@ -22,7 +22,9 @@ use self::{
   raw_split_chunk_name::default_chunk_option_name,
   raw_split_chunk_size::RawSplitChunkSizes,
 };
-use crate::filename::JsFilename;
+use crate::{
+  compiler_scoped_tsfn::CompilerScopedTsFnHandle as ThreadsafeFunction, filename::JsFilename,
+};
 
 #[napi(object, object_to_js = false)]
 #[derive(Debug)]
@@ -47,7 +49,7 @@ pub struct RawSplitChunksOptions<'a> {
   pub min_size: Option<Either<f64, RawSplitChunkSizes>>,
   pub min_size_reduction: Option<Either<f64, RawSplitChunkSizes>>,
   //   pub min_size_reduction: usize,
-  pub enforce_size_threshold: Option<f64>,
+  pub enforce_size_threshold: Option<Either<f64, RawSplitChunkSizes>>,
   pub min_remaining_size: Option<Either<f64, RawSplitChunkSizes>>,
   // layer: String,
   pub max_size: Option<Either<f64, RawSplitChunkSizes>>,
@@ -85,7 +87,7 @@ pub struct RawCacheGroupOptions<'a> {
   pub min_size: Option<Either<f64, RawSplitChunkSizes>>,
   pub min_size_reduction: Option<Either<f64, RawSplitChunkSizes>>,
   //   pub min_size_reduction: usize,
-  //   pub enforce_size_threshold: usize,
+  pub enforce_size_threshold: Option<Either<f64, RawSplitChunkSizes>>,
   //   pub min_remaining_size: usize,
   // layer: String,
   pub max_size: Option<Either<f64, RawSplitChunkSizes>>,
@@ -135,6 +137,8 @@ impl<'a> From<RawSplitChunksOptions<'a>> for rspack_plugin_split_chunks::PluginO
     let overall_min_size = create_sizes(raw_opts.min_size);
 
     let overall_min_size_reduction = create_sizes(raw_opts.min_size_reduction);
+
+    let overall_enforce_size_threshold = create_sizes(raw_opts.enforce_size_threshold);
 
     let overall_max_size = create_sizes(raw_opts.max_size);
 
@@ -224,6 +228,8 @@ impl<'a> From<RawSplitChunksOptions<'a>> for rspack_plugin_split_chunks::PluginO
             min_chunks,
             min_size,
             min_size_reduction,
+            enforce_size_threshold: create_sizes(v.enforce_size_threshold)
+              .merge(&overall_enforce_size_threshold),
             automatic_name_delimiter: v
               .automatic_name_delimiter
               .unwrap_or(overall_automatic_name_delimiter.clone()),

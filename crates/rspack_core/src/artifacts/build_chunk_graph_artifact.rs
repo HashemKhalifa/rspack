@@ -1,10 +1,9 @@
 use std::mem;
 
 use futures::Future;
-use indexmap::IndexMap;
 use rspack_collections::{IdentifierIndexMap, IdentifierMap};
 use rspack_error::Result;
-use rspack_util::tracing_preset::TRACING_BENCH_TARGET;
+use rspack_util::{fx_hash::FxIndexMap, tracing_preset::TRACING_BENCH_TARGET};
 use rustc_hash::FxHashMap as HashMap;
 use tracing::instrument;
 
@@ -12,6 +11,7 @@ use crate::{
   ArtifactExt, ChunkByUkey, ChunkGraph, ChunkGroupByUkey, ChunkGroupUkey, ChunkUkey, Compilation,
   Logger, ModuleIdentifier,
   build_chunk_graph::code_splitter::{CodeSplitter, DependenciesBlockIdentifier},
+  fast_set,
   incremental::{IncrementalPasses, Mutation},
 };
 
@@ -20,7 +20,7 @@ pub struct BuildChunkGraphArtifact {
   pub chunk_by_ukey: ChunkByUkey,
   pub chunk_graph: ChunkGraph,
   pub chunk_group_by_ukey: ChunkGroupByUkey,
-  pub entrypoints: IndexMap<String, ChunkGroupUkey>,
+  pub entrypoints: FxIndexMap<String, ChunkGroupUkey>,
   pub async_entrypoints: Vec<ChunkGroupUkey>,
   pub named_chunk_groups: HashMap<String, ChunkGroupUkey>,
   pub named_chunks: HashMap<String, ChunkUkey>,
@@ -29,6 +29,10 @@ pub struct BuildChunkGraphArtifact {
 }
 
 impl BuildChunkGraphArtifact {
+  pub(crate) fn set_code_splitter(&mut self, code_splitter: CodeSplitter) {
+    fast_set(&mut self.code_splitter, code_splitter);
+  }
+
   // we can skip rebuilding chunk graph if none of modules
   // has changed its outgoings
   // we don't need to check if module has changed its incomings
@@ -89,7 +93,7 @@ impl BuildChunkGraphArtifact {
           .module_graph_module_by_identifier(&module)
           .expect("should have module");
         module
-          .all_dependencies
+          .all_dependencies()
           .iter()
           .filter(|dep_id| {
             module_graph
@@ -104,12 +108,16 @@ impl BuildChunkGraphArtifact {
           });
 
         'outer: for (m, connections) in active_modules {
+          let side_effects_state_artifact = &this_compilation
+            .build_module_graph_artifact
+            .side_effects_state_artifact;
           for conn in connections {
             if conn
               .active_state(
                 module_graph,
                 None,
                 module_graph_cache,
+                side_effects_state_artifact,
                 &this_compilation.exports_info_artifact,
               )
               .is_not_false()
@@ -170,6 +178,18 @@ impl BuildChunkGraphArtifact {
     true
   }
 
+  /// Reset cached chunks back to the initial render state.
+  ///
+  /// webpack creates fresh `Chunk` instances for every compilation, and
+  /// `Chunk.rendered` starts as `false` in the constructor. Rspack can reuse
+  /// cached chunks across incremental compilations, so we need to restore the
+  /// same state before running the next sealing/rendering pipeline.
+  fn reset_chunk_rendered_state(&mut self) {
+    for chunk in self.chunk_by_ukey.values_mut() {
+      chunk.set_rendered(false);
+    }
+  }
+
   fn reset_for_rebuild(&mut self) {
     self.chunk_by_ukey = Default::default();
     self.chunk_graph = Default::default();
@@ -178,7 +198,7 @@ impl BuildChunkGraphArtifact {
     self.async_entrypoints.clear();
     self.named_chunk_groups.clear();
     self.named_chunks.clear();
-    self.code_splitter = Default::default();
+    self.set_code_splitter(Default::default());
     self.module_idx.clear();
   }
 }
@@ -192,6 +212,10 @@ where
   T: Fn(&'a mut Compilation) -> F,
   F: Future<Output = Result<&'a mut Compilation>>,
 {
+  compilation
+    .build_chunk_graph_artifact
+    .reset_chunk_rendered_state();
+
   if !compilation.incremental.enabled() {
     task(compilation).await?;
     return Ok(());

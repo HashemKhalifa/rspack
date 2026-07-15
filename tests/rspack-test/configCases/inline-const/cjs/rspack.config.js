@@ -1,8 +1,11 @@
 /** @type {import("@rspack/core").Configuration} */
 module.exports = {
-	entry: "./index.cjs",
-	optimization: {
-		moduleIds: "named",
-		inlineExports: true
-	},
+  externals: {
+    fs: 'node-commonjs fs',
+  },
+  entry: './index.cjs',
+  optimization: {
+    moduleIds: 'named',
+    inlineExports: true,
+  },
 };

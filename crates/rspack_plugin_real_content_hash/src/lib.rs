@@ -1,11 +1,11 @@
 mod drive;
 
 use std::{
-  hash::{BuildHasherDefault, Hasher},
+  hash::BuildHasherDefault,
   sync::{Arc, LazyLock},
 };
 
-use aho_corasick::{AhoCorasick, MatchKind};
+use aho_corasick::{AhoCorasick, AhoCorasickKind, MatchKind};
 use atomic_refcell::AtomicRefCell;
 use derive_more::Debug;
 pub use drive::*;
@@ -17,7 +17,7 @@ use rspack_core::{
   rspack_sources::{BoxSource, RawStringSource, SourceExt, SourceValue},
 };
 use rspack_error::{Result, ToStringResultToRspackResultExt};
-use rspack_hash::RspackHash;
+use rspack_hash::RspackHasher;
 use rspack_hook::{plugin, plugin_hook};
 use rspack_util::fx_hash::FxDashMap;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
@@ -103,8 +103,15 @@ async fn inner_impl(compilation: &mut Compilation) -> Result<()> {
   // use LeftmostLongest here:
   // e.g. 4afc|4afcbe match xxx.4afcbe-4afc.js -> xxx.[4afc]be-[4afc].js
   //      4afcbe|4afc match xxx.4afcbe-4afc.js -> xxx.[4afcbe]-[4afc].js
+  // force the DFA: hex hash patterns defeat the literal prefilters, leaving
+  // the default automaton scanning with the slower contiguous NFA. Total
+  // pattern bytes bound the DFA size; beyond the cap fall back to the default
+  // automaton so pathological hash counts don't pay the DFA build cost
+  const DFA_PATTERN_BYTES_CAP: usize = 128 * 1024;
+  let total_pattern_bytes: usize = hash_to_asset_names.keys().map(|s| s.len()).sum();
   let hash_ac = AhoCorasick::builder()
     .match_kind(MatchKind::LeftmostLongest)
+    .kind((total_pattern_bytes <= DFA_PATTERN_BYTES_CAP).then_some(AhoCorasickKind::DFA))
     .build(hash_to_asset_names.keys().map(|s| s.as_bytes()))
     .expect("Invalid patterns");
   logger.time_end(start);
@@ -137,10 +144,7 @@ async fn inner_impl(compilation: &mut Compilation) -> Result<()> {
   let mut computed_hashes = HashSet::default();
   let mut top_task = ordered_hashes_iter.next();
 
-  loop {
-    let Some(top) = top_task else {
-      break;
-    };
+  while let Some(top) = top_task {
     let mut batch = vec![top];
     top_task = None;
 
@@ -182,7 +186,7 @@ async fn inner_impl(compilation: &mut Compilation) -> Result<()> {
       })
       .collect::<HashMap<_, _>>();
 
-    let new_hashes = rspack_futures::scope::<_, Result<_>>(|token| {
+    let new_hashes = rspack_parallel::scope::<_, Result<_>>(|token| {
       batch
         .iter()
         .cloned()
@@ -211,7 +215,7 @@ async fn inner_impl(compilation: &mut Compilation) -> Result<()> {
               let new_hash = if let Some(new_hash) = updated_hash {
                 new_hash
               } else {
-                let mut hasher = RspackHash::from(&compilation.options.output);
+                let mut hasher = RspackHasher::from(&compilation.options.output);
                 for asset_content in asset_contents {
                   hasher.write(&asset_content.buffer());
                 }

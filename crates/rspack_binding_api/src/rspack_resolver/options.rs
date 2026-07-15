@@ -160,12 +160,6 @@ pub struct NapiResolveOptions {
   ///
   /// Default `false`
   pub enable_pnp: Option<bool>,
-
-  /// Path to PnP manifest file
-  ///
-  /// Default `None`
-  #[napi(ts_type = "string | false")]
-  pub pnp_manifest: Option<Either<String, ()>>,
 }
 
 #[napi]
@@ -211,7 +205,7 @@ pub struct TsconfigOptions {
   /// * an absolute path to the configuration file.
   pub config_file: String,
 
-  /// Support for Typescript Project References.
+  /// Support for TypeScript Project References.
   ///
   /// * `'auto'`: use the `references` field from tsconfig of `config_file`.
   /// * `string[]`: manually provided relative or absolute path.

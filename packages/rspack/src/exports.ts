@@ -2,8 +2,6 @@
 const rspackVersion = RSPACK_VERSION;
 const version = WEBPACK_VERSION;
 
-export { rspackVersion, version };
-
 export type {
   Asset,
   AssetInfo,
@@ -17,9 +15,9 @@ export { Compilation } from './Compilation';
 export { Compiler, type CompilerHooks } from './Compiler';
 export type { MultiCompilerOptions, MultiRspackOptions } from './MultiCompiler';
 export { MultiCompiler } from './MultiCompiler';
+export { rspackVersion, version };
 
 import { RspackOptionsApply } from './rspackOptionsApply';
-export { RspackOptionsApply, RspackOptionsApply as WebpackOptionsApply };
 
 export type { ChunkGroup } from '@rspack/binding';
 export {
@@ -34,6 +32,10 @@ export { ExternalModule } from './ExternalModule';
 export type { ResolveData, ResourceDataWithData } from './Module';
 export { Module } from './Module';
 export type { default as ModuleGraph } from './ModuleGraph';
+export {
+  ModuleGraphConnection,
+  type ConnectionState,
+} from './ModuleGraphConnection';
 export { MultiStats } from './MultiStats';
 export { NormalModule } from './NormalModule';
 export type { NormalModuleFactory } from './NormalModuleFactory';
@@ -53,13 +55,14 @@ export type {
 } from './Stats';
 export { Stats } from './Stats';
 export { StatsErrorCode } from './stats/statsFactoryUtils';
+export { RspackOptionsApply, RspackOptionsApply as WebpackOptionsApply };
 
 // API extractor not working with some re-exports, see: https://github.com/microsoft/fluentui/issues/20694
 import * as ModuleFilenameHelpers from './lib/ModuleFilenameHelpers';
-export { ModuleFilenameHelpers };
 
 // API extractor not working with some re-exports, see: https://github.com/microsoft/fluentui/issues/20694
 export { Template } from './Template';
+export { ModuleFilenameHelpers };
 
 export const WebpackError = Error;
 
@@ -139,15 +142,18 @@ import {
   rsc,
   SubresourceIntegrityPlugin,
 } from './builtin-plugin';
+import JsonpTemplatePlugin from './web/JsonpTemplatePlugin';
 
 export { SubresourceIntegrityPlugin };
 
 interface Web {
   FetchCompileAsyncWasmPlugin: typeof FetchCompileAsyncWasmPlugin;
+  JsonpTemplatePlugin: typeof JsonpTemplatePlugin;
 }
 
 export const web: Web = {
   FetchCompileAsyncWasmPlugin,
+  JsonpTemplatePlugin,
 };
 
 import { NodeTargetPlugin } from './builtin-plugin';
@@ -175,6 +181,22 @@ interface Electron {
 }
 
 export const electron: Electron = { ElectronTargetPlugin };
+
+import {
+  DeterministicModuleIdsPlugin,
+  HashedModuleIdsPlugin,
+  SyncModuleIdsPlugin,
+} from './builtin-plugin';
+
+interface Ids {
+  DeterministicModuleIdsPlugin: typeof DeterministicModuleIdsPlugin;
+  HashedModuleIdsPlugin: typeof HashedModuleIdsPlugin;
+}
+
+export const ids: Ids = {
+  DeterministicModuleIdsPlugin,
+  HashedModuleIdsPlugin,
+};
 
 import { EnableLibraryPlugin } from './builtin-plugin';
 
@@ -207,7 +229,7 @@ export const javascript: JavaScript = {
   JavascriptModulesPlugin,
 };
 
-import { WebWorkerTemplatePlugin } from './builtin-plugin';
+import WebWorkerTemplatePlugin from './webworker/WebWorkerTemplatePlugin';
 
 interface Webworker {
   WebWorkerTemplatePlugin: typeof WebWorkerTemplatePlugin;
@@ -323,6 +345,7 @@ export type {
 } from './builtin-loader/swc/index';
 ///// Rspack Postfixed Internal Plugins /////
 export type {
+  CircularCheckRspackPluginOptions,
   CircularDependencyRspackPluginOptions,
   CopyRspackPluginOptions,
   CssExtractRspackLoaderOptions,
@@ -337,6 +360,7 @@ export type {
   SwcJsMinimizerRspackPluginOptions,
 } from './builtin-plugin';
 export {
+  CircularCheckRspackPlugin,
   CircularDependencyRspackPlugin,
   ContextReplacementPlugin,
   CopyRspackPlugin,
@@ -395,6 +419,9 @@ interface Experiments {
   CssChunkingPlugin: typeof CssChunkingPlugin;
   createNativePlugin: typeof createNativePlugin;
   VirtualModulesPlugin: typeof VirtualModulesPlugin;
+  ids: {
+    SyncModuleIdsPlugin: typeof SyncModuleIdsPlugin;
+  };
   rsc: typeof rsc;
 }
 
@@ -446,5 +473,8 @@ export const experiments: Experiments = {
   CssChunkingPlugin,
   createNativePlugin,
   VirtualModulesPlugin,
+  ids: {
+    SyncModuleIdsPlugin,
+  },
   rsc,
 };

@@ -49,7 +49,7 @@ impl RuntimeModule for SRIHashVariableRuntimeModule {
   async fn generate(&self, context: &RuntimeModuleGenerateContext<'_>) -> Result<String> {
     let compilation = context.compilation;
     let Some(chunk) = self
-      .chunk
+      .chunk()
       .as_ref()
       .and_then(|c| compilation.build_chunk_graph_artifact.chunk_by_ukey.get(c))
     else {
@@ -96,23 +96,20 @@ impl RuntimeModule for SRIHashVariableRuntimeModule {
       ),
     ];
 
-    let all_chunks = find_chunks(
-      self.chunk.as_ref().expect("should attached chunk"),
-      compilation,
-    )
-    .into_iter()
-    .filter(|c| {
-      compilation
-        .build_chunk_graph_artifact
-        .chunk_graph
-        .get_chunk_modules(c, module_graph)
-        .iter()
-        .any(|m| {
-          let result = compilation.code_generation_results.get_one(&m.identifier());
-          result.inner.values().any(|v| v.size() != 0)
-        })
-    })
-    .collect::<Vec<_>>();
+    let all_chunks = find_chunks(&self.chunk().expect("should attached chunk"), compilation)
+      .into_iter()
+      .filter(|c| {
+        compilation
+          .build_chunk_graph_artifact
+          .chunk_graph
+          .get_chunk_modules(c, module_graph)
+          .iter()
+          .any(|m| {
+            let result = compilation.code_generation_results.get_one(&m.identifier());
+            result.inner.values().any(|v| v.size() != 0)
+          })
+      })
+      .collect::<Vec<_>>();
 
     let mut code = vec![];
 
@@ -159,9 +156,14 @@ impl RuntimeModule for SRIHashVariableRuntimeModule {
 
     Ok(code.join("\n"))
   }
-
-  fn additional_runtime_requirements(&self, _compilation: &Compilation) -> RuntimeGlobals {
-    RuntimeGlobals::REQUIRE_SCOPE
+  fn runtime_requirements(
+    &self,
+    _compilation: &Compilation,
+  ) -> rspack_core::RuntimeModuleRuntimeRequirements {
+    rspack_core::RuntimeModuleRuntimeRequirements {
+      dependencies: { RuntimeGlobals::REQUIRE_SCOPE },
+      ..Default::default()
+    }
   }
 }
 
@@ -176,7 +178,7 @@ fn generate_sri_hash_placeholders(
     chunks
       .into_iter()
       .map(|c| {
-        let chunk_id = rspack_util::json_stringify_str(c.as_str());
+        let chunk_id = rspack_util::json_stringify(c);
         let placeholder =
           rspack_util::json_stringify_str(&make_placeholder(asset_type, hash_funcs, c.as_str()));
         format!("{chunk_id}: {placeholder}")
@@ -199,8 +201,12 @@ pub async fn create_script(&self, mut data: CreateScriptData) -> Result<CreateSc
 }
 
 #[plugin_hook(RuntimePluginCreateLink for SubresourceIntegrityPlugin)]
-pub async fn create_link(&self, mut data: CreateLinkData) -> Result<CreateLinkData> {
-  let ctx = SubresourceIntegrityPlugin::get_compilation_sri_context(data.chunk.compilation_id);
+pub async fn create_link<'a>(
+  &self,
+  compilation: &Compilation,
+  mut data: CreateLinkData<'a>,
+) -> Result<CreateLinkData<'a>> {
+  let ctx = SubresourceIntegrityPlugin::get_compilation_sri_context(compilation.id());
   if data.code.contains("loadingAttribute") {
     data.code = add_attribute(
       "link",
@@ -224,8 +230,12 @@ pub async fn create_link(&self, mut data: CreateLinkData) -> Result<CreateLinkDa
 }
 
 #[plugin_hook(RuntimePluginLinkPreload for SubresourceIntegrityPlugin)]
-pub async fn link_preload(&self, mut data: LinkPreloadData) -> Result<LinkPreloadData> {
-  let ctx = SubresourceIntegrityPlugin::get_compilation_sri_context(data.chunk.compilation_id);
+pub async fn link_preload<'a>(
+  &self,
+  compilation: &Compilation,
+  mut data: LinkPreloadData<'a>,
+) -> Result<LinkPreloadData<'a>> {
+  let ctx = SubresourceIntegrityPlugin::get_compilation_sri_context(compilation.id());
   if data.code.contains(".as = \"style\"") {
     data.code = add_attribute(
       "link",

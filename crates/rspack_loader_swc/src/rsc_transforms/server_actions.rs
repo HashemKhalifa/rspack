@@ -781,6 +781,7 @@ impl<'a, C: Comments> ServerActions<'a, C> {
           module_type: RscModuleType::Server,
           server_refs: Default::default(),
           client_refs: Default::default(),
+          import_meta_rsc: false,
           is_cjs: false,
           action_ids,
         });
@@ -1300,6 +1301,7 @@ impl<'a, C: Comments> VisitMut for ServerActions<'a, C> {
     // 2. Register any remaining exports in the post-pass that weren't handled by the visitor.
     if should_track_exports {
       for stmt in stmts.iter() {
+        #[allow(clippy::collapsible_match)]
         match stmt {
           ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(export_default_expr)) => {
             if let Expr::Ident(ident) = &*export_default_expr.expr {
@@ -1447,14 +1449,27 @@ impl<'a, C: Comments> VisitMut for ServerActions<'a, C> {
     for mut stmt in stmts.take() {
       if should_track_exports {
         let mut disallowed_export_span = DUMMY_SP;
-
+        #[allow(clippy::collapsible_match)]
         match &mut stmt {
           ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl { decl, span })) => match decl {
-            Decl::Var(_)
-            | Decl::Fn(_)
-            | Decl::TsInterface(_)
-            | Decl::TsTypeAlias(_)
-            | Decl::TsEnum(_) => {}
+            Decl::Var(var) => {
+              if var.decls.iter().any(|decl| {
+                matches!(decl.name, Pat::Ident(_))
+                  && decl
+                    .init
+                    .as_deref()
+                    .is_none_or(is_known_non_server_action_export)
+              }) {
+                // Disallow exporting literals. Admittedly, this is
+                // pretty arbitrary. We don't disallow exporting object
+                // and array literals, as that would be too restrictive,
+                // especially for page and layout files with
+                // 'use cache', that may want to export metadata or
+                // viewport objects.
+                disallowed_export_span = *span;
+              }
+            }
+            Decl::Fn(_) | Decl::TsInterface(_) | Decl::TsTypeAlias(_) | Decl::TsEnum(_) => {}
             _ => {
               disallowed_export_span = *span;
             }
@@ -1902,10 +1917,8 @@ impl<'a, C: Comments> VisitMut for ServerActions<'a, C> {
   fn visit_mut_assign_expr(&mut self, assign_expr: &mut AssignExpr) {
     let old_arrow_or_fn_expr_ident = self.arrow_or_fn_expr_ident.clone();
 
-    if let (
-      AssignTarget::Simple(SimpleAssignTarget::Ident(ident)),
-      box (Expr::Arrow(_) | Expr::Fn(_)),
-    ) = (&assign_expr.left, &assign_expr.right)
+    if let (AssignTarget::Simple(SimpleAssignTarget::Ident(ident)), Expr::Arrow(_) | Expr::Fn(_)) =
+      (&assign_expr.left, assign_expr.right.as_ref())
     {
       self.arrow_or_fn_expr_ident = Some(ident.id.clone());
     }
@@ -2000,6 +2013,13 @@ fn may_need_cache_runtime_wrapper(expr: &Expr) -> bool {
     // Unknown/might be function - needs runtime check
     _ => true,
   }
+}
+
+fn is_known_non_server_action_export(expr: &Expr) -> bool {
+  matches!(
+    expr,
+    Expr::Object(_) | Expr::Array(_) | Expr::Lit(_) | Expr::Class(_)
+  )
 }
 
 fn assign_name_to_ident(ident: &Ident, name: &str) -> Stmt {

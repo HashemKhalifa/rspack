@@ -1,14 +1,15 @@
-use std::{borrow::Cow, fmt::Debug, rc::Rc};
+use std::{borrow::Cow, fmt::Debug};
 
 use rayon::prelude::*;
 use rspack_collections::{IdentifierMap, IdentifierSet};
 use rspack_core::{
-  BoxModule, Compilation, CompilationOptimizeDependencies, ConnectionState, DependencyExtraMeta,
-  DependencyId, ExportsInfoArtifact, FactoryMeta, GetTargetResult, Logger, ModuleFactoryCreateData,
-  ModuleGraph, ModuleGraphConnection, ModuleIdentifier, NormalModuleCreateData,
-  NormalModuleFactoryModule, Plugin, PrefetchExportsInfoMode, RayonConsumer,
-  ResolvedExportInfoTarget, SideEffectsDoOptimize, SideEffectsDoOptimizeMoveTarget,
-  SideEffectsOptimizeArtifact,
+  AsyncModulesArtifact, BoxModule, Compilation, CompilationFinishModules,
+  CompilationOptimizeDependencies, ConnectionState, DependencyExtraMeta, DependencyId,
+  ExportsInfoArtifact, FactoryMeta, GetTargetResult, Logger, ModuleFactoryCreateData, ModuleGraph,
+  ModuleGraphConnection, ModuleIdentifier, NormalModuleCreateData, NormalModuleFactoryModule,
+  OptimizationBailoutItem, Plugin, ResolvedExportInfoTarget, SideEffectsDoOptimize,
+  SideEffectsDoOptimizeMoveTarget, SideEffectsOptimizeArtifact, SideEffectsState,
+  SideEffectsStateArtifact,
   build_module_graph::BuildModuleGraphArtifact,
   can_move_target, get_target,
   incremental::{self, IncrementalPasses, Mutation},
@@ -17,9 +18,15 @@ use rspack_error::{Diagnostic, Result};
 use rspack_hook::{plugin, plugin_hook};
 use rspack_paths::{AssertUtf8, Utf8Path};
 use sugar_path::SugarPath;
-use swc_core::ecma::ast::*;
+use swc_experimental_ecma_ast::{ClassMember, Key, PropName};
 
-use crate::dependency::{ESMExportImportedSpecifierDependency, ESMImportSpecifierDependency};
+use crate::{
+  FLAG_DEPENDENCY_EXPORTS_STAGE, deferred_pure_check_is_impure,
+  dependency::{ESMExportImportedSpecifierDependency, ESMImportSpecifierDependency},
+};
+
+pub static SIDE_EFFECTS_FLAG_PLUGIN_STAGE: i32 = FLAG_DEPENDENCY_EXPORTS_STAGE + 10;
+const CALL_WITH_SIDE_EFFECTS_BAILOUT: &str = "Call with side effects";
 
 #[derive(Clone, Debug)]
 enum SideEffects {
@@ -72,37 +79,35 @@ fn glob_match_with_normalized_pattern(pattern: &str, string: &str) -> bool {
   fast_glob::glob_match(&normalized_glob, string.trim_start_matches("./"))
 }
 
-pub trait ClassExt {
-  fn class_key(&self) -> Option<&PropName>;
+pub trait ClassExt<'a> {
+  fn class_key(&'a self) -> Option<&'a PropName<'a>>;
   fn is_static(&self) -> bool;
 }
 
-impl ClassExt for ClassMember {
-  fn class_key(&self) -> Option<&PropName> {
+impl<'a> ClassExt<'a> for ClassMember<'a> {
+  fn class_key(&'a self) -> Option<&'a PropName<'a>> {
     match self {
       ClassMember::Constructor(c) => Some(&c.key),
       ClassMember::Method(m) => Some(&m.key),
       ClassMember::PrivateMethod(_) => None,
       ClassMember::ClassProp(c) => Some(&c.key),
       ClassMember::PrivateProp(_) => None,
-      ClassMember::TsIndexSignature(_) => unreachable!(),
       ClassMember::Empty(_) => None,
       ClassMember::StaticBlock(_) => None,
-      ClassMember::AutoAccessor(a) => match a.key {
+      ClassMember::AutoAccessor(a) => match &a.key {
         Key::Private(_) => None,
-        Key::Public(ref public) => Some(public),
+        Key::Public(public) => Some(public),
       },
     }
   }
 
   fn is_static(&self) -> bool {
     match self {
-      ClassMember::Constructor(_cons) => false,
+      ClassMember::Constructor(_) => false,
       ClassMember::Method(m) => m.is_static,
       ClassMember::PrivateMethod(m) => m.is_static,
       ClassMember::ClassProp(p) => p.is_static,
       ClassMember::PrivateProp(p) => p.is_static,
-      ClassMember::TsIndexSignature(_) => unreachable!(),
       ClassMember::Empty(_) => false,
       ClassMember::StaticBlock(_) => true,
       ClassMember::AutoAccessor(a) => a.is_static,
@@ -112,13 +117,21 @@ impl ClassExt for ClassMember {
 
 #[plugin]
 #[derive(Debug, Default)]
-pub struct SideEffectsFlagPlugin;
+pub struct SideEffectsFlagPlugin {
+  analyze_side_effects_free: bool,
+}
+
+impl SideEffectsFlagPlugin {
+  pub fn new(analyze_side_effects_free: bool) -> Self {
+    Self::new_inner(analyze_side_effects_free)
+  }
+}
 
 #[plugin_hook(NormalModuleFactoryModule for SideEffectsFlagPlugin,tracing=false)]
 async fn nmf_module(
   &self,
   _data: &mut ModuleFactoryCreateData,
-  create_data: &mut NormalModuleCreateData,
+  create_data: &NormalModuleCreateData,
   module: &mut BoxModule,
 ) -> Result<()> {
   if let Some(has_side_effects) = create_data.side_effects {
@@ -127,7 +140,8 @@ async fn nmf_module(
     });
     return Ok(());
   }
-  let resource_data = &create_data.resource_resolve_data;
+
+  let resource_data = create_data.resource_resolve_data.as_ref();
   let Some(resource_path) = resource_data.path() else {
     return Ok(());
   };
@@ -143,9 +157,83 @@ async fn nmf_module(
     .relative(package_path)
     .assert_utf8();
   let has_side_effects = get_side_effects_from_package_json(side_effects, relative_path.as_path());
+
   module.set_factory_meta(FactoryMeta {
     side_effect_free: Some(!has_side_effects),
   });
+  Ok(())
+}
+
+// run after exports info are set
+#[plugin_hook(CompilationFinishModules for SideEffectsFlagPlugin, stage = SIDE_EFFECTS_FLAG_PLUGIN_STAGE)]
+async fn finish_modules(
+  &self,
+  compilation: &Compilation,
+  _modules: &mut AsyncModulesArtifact,
+  exports_info_artifact: &mut ExportsInfoArtifact,
+  side_effects_state_artifact: &mut SideEffectsStateArtifact,
+) -> Result<()> {
+  let modules: IdentifierSet = compilation
+    .get_module_graph()
+    .modules()
+    .map(|(id, _)| *id)
+    .collect();
+
+  let module_graph = compilation.get_module_graph();
+  let mut deferred_side_effect_states = Vec::new();
+  for module_identifier in &modules {
+    let Some(module) = module_graph.module_by_identifier(module_identifier) else {
+      continue;
+    };
+
+    let build_info = module.build_info();
+    if !self.analyze_side_effects_free || build_info.deferred_pure_checks.is_empty() {
+      continue;
+    }
+
+    let baseline_side_effect_free = module.build_meta().side_effect_free();
+
+    let has_impure_deferred_check =
+      // find the first deferred pure check that resolves to an impure target
+      build_info
+        .deferred_pure_checks
+        .iter()
+        .any(|deferred_check| {
+          deferred_pure_check_is_impure(
+            module_graph,
+            exports_info_artifact,
+            &deferred_check.dep_id,
+            &deferred_check.atom,
+          )
+        });
+
+    deferred_side_effect_states.push((
+      *module_identifier,
+      baseline_side_effect_free && !has_impure_deferred_check,
+      has_impure_deferred_check,
+    ));
+  }
+
+  side_effects_state_artifact.clear();
+  for (module_id, side_effect_free, has_impure_deferred_check) in deferred_side_effect_states {
+    side_effects_state_artifact.insert(
+      module_id,
+      SideEffectsState {
+        side_effect_free,
+        optimization_bailouts_to_add: if has_impure_deferred_check {
+          vec![OptimizationBailoutItem::Message(String::from(
+            CALL_WITH_SIDE_EFFECTS_BAILOUT,
+          ))]
+        } else {
+          Vec::new()
+        },
+        optimization_bailouts_to_remove: vec![OptimizationBailoutItem::Message(String::from(
+          CALL_WITH_SIDE_EFFECTS_BAILOUT,
+        ))],
+      },
+    );
+  }
+
   Ok(())
 }
 
@@ -161,27 +249,40 @@ async fn optimize_dependencies(
   let logger = compilation.get_logger("rspack.SideEffectsFlagPlugin");
   let start = logger.time("update connections");
 
+  let side_effects_state_map: IdentifierMap<ConnectionState> = {
+    let module_graph = &build_module_graph_artifact.module_graph;
+    let side_effects_state_artifact = &build_module_graph_artifact.side_effects_state_artifact;
+
+    module_graph
+      .modules_par()
+      .map(|(module_identifier, module)| {
+        (
+          *module_identifier,
+          module.get_side_effects_connection_state(
+            module_graph,
+            &compilation.module_graph_cache_artifact,
+            side_effects_state_artifact,
+            &mut Default::default(),
+            &mut Default::default(),
+          ),
+        )
+      })
+      .collect()
+  };
   let module_graph = build_module_graph_artifact.get_module_graph();
 
-  let side_effects_state_map: IdentifierMap<ConnectionState> = module_graph
-    .modules_par()
-    .map(|(module_identifier, module)| {
-      (
-        *module_identifier,
-        module.get_side_effects_connection_state(
-          module_graph,
-          &compilation.module_graph_cache_artifact,
-          &mut Default::default(),
-          &mut Default::default(),
-        ),
-      )
-    })
-    .collect();
+  if self.analyze_side_effects_free {
+    // `finish_modules` may change the side-effect state of modules that were not part of the
+    // incremental mutation frontier. Reuse of the previous optimize artifact can therefore keep
+    // stale connection rewrites alive, so pure-function analysis falls back to a full refresh here.
+    side_effects_optimize_artifact.clear();
+  }
 
   let inner_start = logger.time("prepare connections");
-  let modules: IdentifierSet = if let Some(mutations) = compilation
-    .incremental
-    .mutations_read(IncrementalPasses::OPTIMIZE_DEPENDENCIES)
+  let modules: Vec<_> = if !self.analyze_side_effects_free
+    && let Some(mutations) = compilation
+      .incremental
+      .mutations_read(IncrementalPasses::OPTIMIZE_DEPENDENCIES)
     && !side_effects_optimize_artifact.is_empty()
   {
     side_effects_optimize_artifact.retain(|dependency_id, do_optimize| {
@@ -239,14 +340,18 @@ async fn optimize_dependencies(
       module_graph.modules_len()
     ));
 
+    let mut modules = modules.into_iter().collect::<Vec<_>>();
+    modules.sort_unstable();
     modules
   } else {
-    module_graph.modules_keys().copied().collect()
+    let mut modules = module_graph.modules_keys().copied().collect::<Vec<_>>();
+    modules.sort_unstable();
+    modules
   };
   logger.time_end(inner_start);
 
   let inner_start = logger.time("find optimizable connections");
-  modules
+  let mut optimized_connections = modules
     .par_iter()
     .filter(|module| side_effects_state_map[module] == ConnectionState::Active(false))
     .flat_map(|module| {
@@ -265,16 +370,22 @@ async fn optimize_dependencies(
         ),
       )
     })
-    .consume(|(dep_id, can_optimize)| {
-      if let Some(do_optimize) = can_optimize {
-        side_effects_optimize_artifact.insert(dep_id, do_optimize);
-      } else {
-        side_effects_optimize_artifact.remove(&dep_id);
-      }
-    });
+    .collect::<Vec<_>>();
+  optimized_connections.sort_unstable_by_key(|(dep_id, _)| *dep_id);
+  for (dep_id, can_optimize) in optimized_connections {
+    if let Some(do_optimize) = can_optimize {
+      side_effects_optimize_artifact.insert(dep_id, do_optimize);
+    } else {
+      side_effects_optimize_artifact.remove(&dep_id);
+    }
+  }
   logger.time_end(inner_start);
 
-  let mut do_optimizes = side_effects_optimize_artifact.clone();
+  let mut do_optimizes = side_effects_optimize_artifact
+    .iter()
+    .map(|(dependency, do_optimize)| (*dependency, do_optimize.clone()))
+    .collect::<Vec<_>>();
+  do_optimizes.sort_unstable_by_key(|(dependency, _)| *dependency);
 
   let inner_start = logger.time("do optimize connections");
   let mut do_optimized_count = 0;
@@ -305,8 +416,13 @@ async fn optimize_dependencies(
         .map(|i| (connection.dependency_id, i))
       })
       .collect();
+    do_optimizes.sort_unstable_by_key(|(dependency, _)| *dependency);
   }
   logger.time_end(inner_start);
+
+  build_module_graph_artifact
+    .side_effects_state_artifact
+    .set_module_evaluation_side_effects_states(side_effects_state_map);
 
   logger.time_end(start);
   logger.log(format!("optimized {do_optimized_count} connections"));
@@ -359,17 +475,17 @@ fn can_optimize_connection(
   if let Some(dep) = dep.downcast_ref::<ESMExportImportedSpecifierDependency>()
     && let Some(name) = &dep.name
   {
-    let exports_info = exports_info_artifact
-      .get_prefetched_exports_info(&original_module, PrefetchExportsInfoMode::Default);
+    let exports_info = exports_info_artifact.get_exports_info_data(&original_module);
     let export_info = exports_info.get_export_info_without_mut_module_graph(name);
 
+    let resolve_filter = |target: &ResolvedExportInfoTarget| {
+      side_effects_state_map[&target.module] == ConnectionState::Active(false)
+    };
     let target = can_move_target(
       &export_info,
       module_graph,
       exports_info_artifact,
-      Rc::new(|target: &ResolvedExportInfoTarget| {
-        side_effects_state_map[&target.module] == ConnectionState::Active(false)
-      }),
+      &resolve_filter,
     )?;
     if !module_graph.can_update_module(&dependency_id, &target.module) {
       return None;
@@ -404,19 +520,17 @@ fn can_optimize_connection(
     && let ids = dep.get_ids(module_graph)
     && !ids.is_empty()
   {
-    let exports_info = exports_info_artifact.get_prefetched_exports_info(
-      connection.module_identifier(),
-      PrefetchExportsInfoMode::Default,
-    );
+    let exports_info = exports_info_artifact.get_exports_info_data(connection.module_identifier());
     let export_info = exports_info.get_export_info_without_mut_module_graph(&ids[0]);
 
+    let resolve_filter = |target: &ResolvedExportInfoTarget| {
+      side_effects_state_map[&target.module] == ConnectionState::Active(false)
+    };
     let Some(GetTargetResult::Target(target)) = get_target(
       &export_info,
       module_graph,
       exports_info_artifact,
-      Rc::new(|target: &ResolvedExportInfoTarget| {
-        side_effects_state_map[&target.module] == ConnectionState::Active(false)
-      }),
+      &resolve_filter,
       &mut Default::default(),
     ) else {
       return None;
@@ -454,6 +568,12 @@ impl Plugin for SideEffectsFlagPlugin {
       .normal_module_factory_hooks
       .module
       .tap(nmf_module::new(self));
+
+    ctx
+      .compilation_hooks
+      .finish_modules
+      .tap(finish_modules::new(self));
+
     ctx
       .compilation_hooks
       .optimize_dependencies

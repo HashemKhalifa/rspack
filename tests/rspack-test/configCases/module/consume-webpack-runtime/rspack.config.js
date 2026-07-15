@@ -1,21 +1,53 @@
-"use strict";
+'use strict';
 
-/** @type {import("../../../../types").Configuration} */
+/** @type {import("@rspack/core").Configuration} */
 module.exports = [
-	{
-		node: false,
-		mode: "production",
-		devtool: false,
-		optimization: {
-			concatenateModules: true
-		}
-	},
-	{
-		node: false,
-		mode: "production",
-		devtool: false,
-		optimization: {
-			concatenateModules: false
-		}
-	}
+  {
+    externals: {
+      fs: 'node-commonjs fs',
+      path: 'node-commonjs path',
+    },
+    node: false,
+    mode: 'production',
+    devtool: false,
+    optimization: {
+      concatenateModules: true,
+    },
+  },
+  {
+    externals: {
+      fs: 'node-commonjs fs',
+      path: 'node-commonjs path',
+    },
+    node: false,
+    mode: 'production',
+    devtool: false,
+    optimization: {
+      concatenateModules: false,
+    },
+  },
+  {
+    externals: {
+      fs: 'node-commonjs fs',
+      path: 'node-commonjs path',
+    },
+    node: false,
+    mode: 'production',
+    devtool: 'eval',
+    optimization: {
+      concatenateModules: true,
+    },
+  },
+  {
+    externals: {
+      fs: 'node-commonjs fs',
+      path: 'node-commonjs path',
+    },
+    node: false,
+    mode: 'production',
+    devtool: 'eval',
+    optimization: {
+      concatenateModules: false,
+    },
+  },
 ];

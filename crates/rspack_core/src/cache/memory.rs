@@ -181,6 +181,11 @@ impl Cache for MemoryCache {
         &mut compilation.cgc_runtime_requirements_artifact,
         &mut old_compilation.cgc_runtime_requirements_artifact,
       );
+      recover_artifact(
+        incremental,
+        &mut compilation.runtime_proxy_metadata_artifact,
+        &mut old_compilation.runtime_proxy_metadata_artifact,
+      );
     }
   }
 
@@ -210,6 +215,23 @@ impl Cache for MemoryCache {
         &mut compilation.chunk_render_cache_artifact,
         &mut old_compilation.chunk_render_cache_artifact,
       );
+    }
+  }
+
+  async fn before_process_assets(&mut self, compilation: &mut Compilation) {
+    if compilation.use_source_map_dev_tool_plugin_cache {
+      // Keep this aligned with persistent cache: enabled cache modes always
+      // provide an artifact, while disabled cache leaves it as `None`.
+      let artifact = self
+        .old_compilation
+        .as_mut()
+        .and_then(|old_compilation| {
+          old_compilation
+            .source_map_dev_tool_plugin_cache_artifact
+            .take()
+        })
+        .unwrap_or_default();
+      compilation.source_map_dev_tool_plugin_cache_artifact = Some(artifact);
     }
   }
 

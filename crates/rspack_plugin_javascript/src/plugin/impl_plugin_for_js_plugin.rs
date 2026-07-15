@@ -1,4 +1,4 @@
-use std::{hash::Hash, sync::Arc};
+use std::sync::Arc;
 
 use rspack_core::{
   AssetInfo, CachedConstDependencyTemplate, ChunkGraph, ChunkKind, ChunkUkey, Compilation,
@@ -11,7 +11,7 @@ use rspack_core::{
   rspack_sources::{BoxSource, CachedSource, SourceExt},
 };
 use rspack_error::{Diagnostic, Result};
-use rspack_hash::RspackHash;
+use rspack_hash::{RspackHash, RspackHasher};
 use rspack_hook::plugin_hook;
 use rustc_hash::FxHashMap;
 
@@ -29,8 +29,9 @@ use crate::{
     ExportInfoDependencyTemplate, ExternalModuleDependencyTemplate,
     ImportContextDependencyTemplate, ImportDependencyTemplate, ImportEagerDependencyTemplate,
     ImportMetaContextDependencyTemplate, ImportMetaHotAcceptDependencyTemplate,
-    ImportMetaHotDeclineDependencyTemplate, ImportMetaResolveDependencyTemplate,
-    ImportMetaResolveHeaderDependencyTemplate, IsIncludedDependencyTemplate,
+    ImportMetaHotDeclineDependencyTemplate, ImportMetaResolveContextDependencyTemplate,
+    ImportMetaResolveDependencyTemplate, ImportMetaResolveHeaderDependencyTemplate,
+    ImportMetaRscDependencyTemplate, ImportWeakDependencyTemplate, IsIncludedDependencyTemplate,
     ModuleArgumentDependencyTemplate, ModuleDecoratorDependencyTemplate,
     ModuleHotAcceptDependencyTemplate, ModuleHotDeclineDependencyTemplate,
     ProvideDependencyTemplate, PureExpressionDependencyTemplate, RequireContextDependencyTemplate,
@@ -61,6 +62,10 @@ async fn compilation(
   );
   compilation.set_dependency_factory(
     DependencyType::EsmImportSpecifier,
+    params.normal_module_factory.clone(),
+  );
+  compilation.set_dependency_factory(
+    DependencyType::ImportMetaRsc,
     params.normal_module_factory.clone(),
   );
   compilation.set_dependency_factory(
@@ -137,6 +142,14 @@ async fn compilation(
     params.context_module_factory.clone(),
   );
   compilation.set_dependency_factory(
+    DependencyType::ImportMetaGlob,
+    params.context_module_factory.clone(),
+  );
+  compilation.set_dependency_factory(
+    DependencyType::ImportMetaResolveContext,
+    params.context_module_factory.clone(),
+  );
+  compilation.set_dependency_factory(
     DependencyType::ImportMetaResolve,
     params.normal_module_factory.clone(),
   );
@@ -148,6 +161,10 @@ async fn compilation(
 
   compilation.set_dependency_factory(
     DependencyType::DynamicImportEager,
+    params.normal_module_factory.clone(),
+  );
+  compilation.set_dependency_factory(
+    DependencyType::DynamicImportWeak,
     params.normal_module_factory.clone(),
   );
   compilation.set_dependency_factory(
@@ -224,8 +241,16 @@ async fn compilation(
     Arc::new(ImportEagerDependencyTemplate::default()),
   );
   compilation.set_dependency_template(
+    ImportWeakDependencyTemplate::template_type(),
+    Arc::new(ImportWeakDependencyTemplate::default()),
+  );
+  compilation.set_dependency_template(
     ProvideDependencyTemplate::template_type(),
     Arc::new(ProvideDependencyTemplate::default()),
+  );
+  compilation.set_dependency_template(
+    ImportMetaRscDependencyTemplate::template_type(),
+    Arc::new(ImportMetaRscDependencyTemplate),
   );
 
   // amd dependency templates
@@ -311,6 +336,14 @@ async fn compilation(
   compilation.set_dependency_template(
     ImportMetaContextDependencyTemplate::template_type(),
     Arc::new(ImportMetaContextDependencyTemplate::default()),
+  );
+  compilation.set_dependency_template(
+    ImportMetaContextDependencyTemplate::glob_template_type(),
+    Arc::new(ImportMetaContextDependencyTemplate::default()),
+  );
+  compilation.set_dependency_template(
+    ImportMetaResolveContextDependencyTemplate::template_type(),
+    Arc::new(ImportMetaResolveContextDependencyTemplate::default()),
   );
   compilation.set_dependency_template(
     ImportMetaResolveDependencyTemplate::template_type(),
@@ -436,7 +469,7 @@ async fn chunk_hash(
   &self,
   compilation: &Compilation,
   chunk_ukey: &ChunkUkey,
-  hasher: &mut RspackHash,
+  hasher: &mut RspackHasher,
 ) -> Result<()> {
   self.get_chunk_hash(chunk_ukey, compilation, hasher).await?;
   if compilation
@@ -457,18 +490,18 @@ async fn content_hash(
   &self,
   compilation: &Compilation,
   chunk_ukey: &ChunkUkey,
-  hashes: &mut FxHashMap<SourceType, RspackHash>,
+  hashes: &mut FxHashMap<SourceType, RspackHasher>,
 ) -> Result<()> {
   let chunk = compilation
     .build_chunk_graph_artifact
     .chunk_by_ukey
     .expect_get(chunk_ukey);
-  let mut hasher = hashes
+  let hasher = hashes
     .entry(SourceType::JavaScript)
-    .or_insert_with(|| RspackHash::from(&compilation.options.output));
+    .or_insert_with(|| RspackHasher::from(&compilation.options.output));
 
   if !chunk.has_runtime(&compilation.build_chunk_graph_artifact.chunk_group_by_ukey) {
-    chunk.id().hash(&mut hasher);
+    chunk.id().hash(hasher);
   }
 
   let module_graph = compilation.get_module_graph();
@@ -491,8 +524,8 @@ async fn content_hash(
     })
     .for_each(|(current, id)| {
       if let Some(current) = current {
-        current.hash(&mut hasher);
-        id.hash(&mut hasher);
+        current.hash(hasher);
+        id.hash(hasher);
       }
     });
 
@@ -505,7 +538,7 @@ async fn content_hash(
       .runtime_modules_hash
       .get(runtime_module_identifier)
     {
-      hash.hash(&mut hasher);
+      hash.hash(hasher);
     }
   }
 
@@ -524,7 +557,7 @@ async fn render_manifest(
     .build_chunk_graph_artifact
     .chunk_by_ukey
     .expect_get(chunk_ukey);
-  let runtime_template = compilation.runtime_template.create_runtime_code_template();
+  let runtime_template = compilation.runtime_template.create_chunk_code_template();
   let is_hot_update = matches!(chunk.kind(), ChunkKind::HotUpdate);
   let is_main_chunk = chunk.groups().iter().any(|group_ukey| {
     let group = compilation
@@ -562,6 +595,7 @@ async fn render_manifest(
     .get_path_with_info(
       &filename_template,
       PathData::default()
+        .chunk(*chunk_ukey, compilation)
         .chunk_hash_optional(chunk.rendered_hash(
           &compilation.chunk_hashes_artifact,
           compilation.options.output.hash_digest_length,
@@ -638,18 +672,18 @@ impl Plugin for JsPlugin {
       .tap(render_manifest::new(self));
 
     ctx.register_parser_and_generator_builder(ModuleType::JsAuto, {
-      Box::new(move |_, _| {
-        Box::<JavaScriptParserAndGenerator>::default() as Box<dyn ParserAndGenerator>
+      Box::new(move |options| {
+        Box::new(JavaScriptParserAndGenerator::new(options)) as Box<dyn ParserAndGenerator>
       })
     });
     ctx.register_parser_and_generator_builder(ModuleType::JsEsm, {
-      Box::new(move |_, _| {
-        Box::<JavaScriptParserAndGenerator>::default() as Box<dyn ParserAndGenerator>
+      Box::new(move |options| {
+        Box::new(JavaScriptParserAndGenerator::new(options)) as Box<dyn ParserAndGenerator>
       })
     });
     ctx.register_parser_and_generator_builder(ModuleType::JsDynamic, {
-      Box::new(move |_, _| {
-        Box::<JavaScriptParserAndGenerator>::default() as Box<dyn ParserAndGenerator>
+      Box::new(move |options| {
+        Box::new(JavaScriptParserAndGenerator::new(options)) as Box<dyn ParserAndGenerator>
       })
     });
 

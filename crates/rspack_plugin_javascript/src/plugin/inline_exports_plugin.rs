@@ -2,10 +2,9 @@ use itertools::Itertools;
 use rayon::prelude::*;
 use rspack_core::{
   Compilation, CompilationOptimizeDependencies, Dependency, DependencyId, ExportMode,
-  ExportProvided, ExportsInfo, ExportsInfoArtifact, ExportsInfoGetter, GetUsedNameParam,
-  ModuleGraph, ModuleGraphConnection, ModuleIdentifier, Plugin, PrefetchExportsInfoMode,
-  RuntimeSpec, SideEffectsOptimizeArtifact, UsageState, UsedName, UsedNameItem,
-  build_module_graph::BuildModuleGraphArtifact, incremental::IncrementalPasses,
+  ExportProvided, ExportsInfo, ExportsInfoArtifact, ModuleGraph, ModuleGraphConnection,
+  ModuleIdentifier, Plugin, RuntimeSpec, SideEffectsOptimizeArtifact, UsageState, UsedName,
+  UsedNameItem, build_module_graph::BuildModuleGraphArtifact, incremental::IncrementalPasses,
 };
 use rspack_error::{Diagnostic, Result};
 use rspack_hook::{plugin, plugin_hook};
@@ -27,18 +26,24 @@ pub fn is_export_inlined(
   ids: &[Atom],
   runtime: Option<&RuntimeSpec>,
 ) -> bool {
-  let used_name = if ids.is_empty() {
-    let exports_info_used = exports_info_artifact.get_prefetched_exports_info_used(module, runtime);
-    ExportsInfoGetter::get_used_name(
-      GetUsedNameParam::WithoutNames(&exports_info_used),
-      runtime,
-      ids,
-    )
-  } else {
-    let exports_info = exports_info_artifact
-      .get_prefetched_exports_info(module, PrefetchExportsInfoMode::Nested(ids));
-    ExportsInfoGetter::get_used_name(GetUsedNameParam::WithNames(&exports_info), runtime, ids)
-  };
+  if ids.is_empty() {
+    return false;
+  }
+
+  if ids.len() == 1 {
+    let export_name = &ids[0];
+    let exports_info = exports_info_artifact.get_exports_info_data(module);
+    let export_info = exports_info
+      .named_exports(export_name)
+      .unwrap_or_else(|| exports_info.other_exports_info());
+    return matches!(
+      export_info.get_used_name(Some(export_name), runtime),
+      Some(UsedNameItem::Inlined(_))
+    );
+  }
+
+  let exports_info = exports_info_artifact.get_exports_info_data(module);
+  let used_name = exports_info.get_used_name(exports_info_artifact, runtime, ids);
   matches!(used_name, Some(UsedName::Inlined(_)))
 }
 
@@ -49,11 +54,14 @@ pub fn connection_active_inline_value_for_esm_import_specifier(
   mg: &ModuleGraph,
   exports_info_artifact: &ExportsInfoArtifact,
 ) -> bool {
+  let ids = dependency.get_ids(mg);
+  if ids.is_empty() {
+    return true;
+  }
   if !inline_enabled(dependency.id(), mg) {
     return true;
   }
   let module = connection.module_identifier();
-  let ids = dependency.get_ids(mg);
   !is_export_inlined(exports_info_artifact, module, ids, runtime)
 }
 
@@ -127,11 +135,7 @@ async fn optimize_dependencies(
     let batch = items
       .par_iter()
       .filter_map(|exports_info| {
-        let exports_info_data = ExportsInfoGetter::prefetch(
-          exports_info,
-          exports_info_artifact,
-          PrefetchExportsInfoMode::Default,
-        );
+        let exports_info_data = exports_info.as_data(exports_info_artifact);
         let export_list = {
           // If there are other usage (e.g. `import { Kind } from './enum'; Kind;`) in any runtime,
           // then we cannot inline this export.
@@ -140,7 +144,8 @@ async fn optimize_dependencies(
           }
           exports_info_data
             .exports()
-            .map(|(_, export_info_data)| {
+            .values()
+            .map(|export_info_data| {
               let do_inline = !export_info_data.has_used_name()
                 && export_info_data.can_inline() == Some(true)
                 && matches!(export_info_data.provided(), Some(ExportProvided::Provided));

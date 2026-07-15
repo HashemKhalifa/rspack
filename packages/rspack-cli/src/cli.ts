@@ -70,6 +70,7 @@ function createAnsiFormatter(
 export class RspackCLI {
   colors: RspackCLIColors;
   program: CAC;
+  _actionPromise: Promise<void> | undefined;
 
   constructor() {
     const program = cac('rspack');
@@ -79,16 +80,33 @@ export class RspackCLI {
     program.version(RSPACK_CLI_VERSION);
   }
 
+  /**
+   * Wraps an async action handler so its promise is captured and can be
+   * awaited in `run()`. CAC's `parse()` does not await async actions,
+   * so without this wrapper, rejections become unhandled.
+   */
+  wrapAction<T extends (...args: any[]) => Promise<void>>(fn: T): T {
+    return ((...args: any[]) => {
+      this._actionPromise = fn(...args);
+      return this._actionPromise;
+    }) as unknown as T;
+  }
+
   async buildCompilerConfig(
     options: CommonOptionsForBuildAndServe,
     rspackCommand: Command,
   ) {
-    let { config, pathMap } = await this.loadConfig(options);
-    config = await this.buildConfig(config, pathMap, options, rspackCommand);
+    const { config: rawConfig, pathMap } = await this.loadConfig(options);
+    const config = await this.buildConfig(
+      rawConfig,
+      pathMap,
+      options,
+      rspackCommand,
+    );
     return config;
   }
 
-  async createCompiler(
+  createCompiler(
     config: RspackOptions | MultiRspackOptions,
     callback?: (e: Error | null, res?: Stats | MultiStats) => void,
   ) {
@@ -161,6 +179,13 @@ export class RspackCLI {
   async run(argv: string[]) {
     await this.registerCommands();
     this.program.parse(argv);
+
+    // CAC's parse() fires async action handlers but does not await them,
+    // so errors would become unhandled rejections. Await the captured
+    // promise to propagate errors through the CLI's own async chain.
+    if (this._actionPromise) {
+      await this._actionPromise;
+    }
   }
 
   private async registerCommands() {
@@ -255,11 +280,7 @@ export class RspackCLI {
       } else if (typeof item.stats === 'string') {
         item.stats = {
           preset: item.stats as
-            | 'normal'
-            | 'none'
-            | 'verbose'
-            | 'errors-only'
-            | 'errors-warnings',
+            'normal' | 'none' | 'verbose' | 'errors-only' | 'errors-warnings',
         };
       }
       return item;
@@ -284,27 +305,10 @@ export class RspackCLI {
       };
     }
 
-    let { loadedConfig, configPath } = config;
+    const { loadedConfig, configPath } = config;
 
-    if (typeof loadedConfig === 'function') {
-      let functionResult = loadedConfig(
-        options.env as Record<string, unknown>,
-        options,
-      );
-      // if return promise we should await its result
-      if (
-        typeof (functionResult as unknown as Promise<unknown>).then ===
-        'function'
-      ) {
-        functionResult = await functionResult;
-      }
-
-      loadedConfig = functionResult;
-    }
-
-    // Handle extends property if the loaded config is not a function
     const { config: extendedConfig, pathMap } = await loadExtendedConfig(
-      loadedConfig as RspackOptions | MultiRspackOptions,
+      loadedConfig,
       configPath,
       process.cwd(),
       options,
@@ -384,10 +388,7 @@ export type RspackConfigAsyncFn = (
 ) => Promise<RspackOptions | MultiRspackOptions>;
 
 export type RspackConfigExport =
-  | RspackOptions
-  | MultiRspackOptions
-  | RspackConfigFn
-  | RspackConfigAsyncFn;
+  RspackOptions | MultiRspackOptions | RspackConfigFn | RspackConfigAsyncFn;
 
 /**
  * This function helps you to autocomplete configuration types.

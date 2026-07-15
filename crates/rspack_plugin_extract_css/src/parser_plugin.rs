@@ -20,20 +20,30 @@ pub struct CssExtractJsonData {
 
 #[derive(Debug, Default)]
 pub struct PluginCssExtractParserPlugin {
-  cache: FxDashMap<String, Vec<BoxDependency>>,
+  cache: FxDashMap<String, Vec<CssExtractJsonData>>,
 }
 
-impl JavascriptParserPlugin for PluginCssExtractParserPlugin {
-  fn finish(&self, parser: &mut JavascriptParser) -> Option<bool> {
+#[rspack_plugin_javascript::implemented_javascript_parser_hooks]
+impl<'p, 'a> JavascriptParserPlugin<'p, 'a> for PluginCssExtractParserPlugin {
+  fn finish(&self, parser: &mut JavascriptParser<'p>) -> Option<bool> {
     let deps = if let Some(data_str) = parser.parse_meta.remove(PLUGIN_NAME)
       && let Ok(data_str) = (data_str as Box<dyn std::any::Any>)
         .downcast::<String>()
         .map(|i| *i)
     {
-      if let Some(deps) = self.cache.get(&data_str) {
-        deps.clone()
+      let data = if let Some(data) = self.cache.get(&data_str) {
+        data.clone()
       } else if let Ok(data) = serde_json::from_str::<Vec<CssExtractJsonData>>(&data_str) {
-        let deps = data
+        self.cache.insert(data_str, data.clone());
+        data
+      } else {
+        vec![]
+      };
+      if data.is_empty() {
+        vec![]
+      } else {
+        parser.build_info.strict = true;
+        data
           .iter()
           .enumerate()
           .map(
@@ -69,12 +79,7 @@ impl JavascriptParserPlugin for PluginCssExtractParserPlugin {
               )) as BoxDependency
             },
           )
-          .collect::<Vec<_>>();
-        self.cache.insert(data_str, deps.clone());
-        parser.build_info.strict = true;
-        deps
-      } else {
-        vec![]
+          .collect::<Vec<_>>()
       }
     } else {
       vec![]

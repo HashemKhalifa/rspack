@@ -1,0 +1,32 @@
+```mjs title=main.mjs
+// ./foo.js
+function a() {
+  return "a";
+}
+
+function b() {
+  return "b";
+}
+
+function c() {
+  return "c";
+}
+
+// ./index.js
+
+
+const missing =  false ? foo.d() : "nope";
+const present =  true ? c() : "nope";
+const hasC =  true;
+
+it("should optimize namespace existence checks with the in operator", async () => {
+  const mod = await import(/* webpackIgnore: true */ "./main.mjs");
+
+  expect(mod.missing).toBe("nope");
+  expect(mod.present).toBe("c");
+  expect(mod.hasC).toBe(true);
+});
+
+export { hasC, missing, present };
+
+```

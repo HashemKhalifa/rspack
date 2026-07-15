@@ -1,5 +1,7 @@
 import type { Command } from 'cac';
 
+export type ConfigLoader = 'auto' | 'jiti' | 'native';
+
 /**
  * Apply common options for all commands
  */
@@ -12,8 +14,8 @@ export const commonOptions = (command: Command): Command =>
     })
     .option(
       '--config-loader <loader>',
-      'Specify the loader to load the config file, can be `native` or `register`.',
-      { default: 'register' },
+      'Specify the loader to load the config file, can be `auto`, `jiti` or `native`.',
+      { default: 'auto' },
     )
     .option('--env <env>', 'env passed to config function', {
       type: [String],
@@ -27,7 +29,7 @@ export const commonOptions = (command: Command): Command =>
 export type CommonOptions = {
   config?: string;
   configName?: string[];
-  configLoader?: string;
+  configLoader?: ConfigLoader;
   env?: Record<string, unknown> | string[];
   nodeEnv?: string;
 };
@@ -92,7 +94,7 @@ export const commonOptionsForBuildAndServe = (command: Command): Command => {
   return command
     .option(
       '-d, --devtool <value>',
-      'specify a developer tool for debugging. Defaults to `cheap-module-source-map` in development and `source-map` in production.',
+      'set source map style for debugging. Use `false` to disable source maps.',
     )
     .option('--entry <entry>', 'entry file', {
       type: [String],
@@ -123,15 +125,23 @@ function setBuiltinEnvArg(
   value: unknown,
 ) {
   const envName = `RSPACK_${envNameSuffix}`;
-  if (!(envName in env)) {
+  // `hasOwnProperty.call` so a polluted prototype can't mask the write.
+  if (!Object.prototype.hasOwnProperty.call(env, envName)) {
     env[envName] = value;
   }
 }
+
+// Reject these segments in dotted `--env` paths to avoid prototype pollution.
+const DANGEROUS_ENV_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function normalizeEnvToObject(options: CommonOptions) {
   function parseValue(previous: Record<string, unknown>, value: string) {
     const [allKeys, val] = value.split(/=(.+)/, 2);
     const splitKeys = allKeys.split(/\.(?!$)/);
+
+    if (splitKeys.some((k) => DANGEROUS_ENV_KEYS.has(k.replace(/=$/, '')))) {
+      return previous;
+    }
 
     let prevRef = previous;
 

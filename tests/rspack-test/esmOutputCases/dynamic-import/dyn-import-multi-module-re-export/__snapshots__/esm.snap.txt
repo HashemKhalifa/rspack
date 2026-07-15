@@ -15,8 +15,7 @@ const helper = () => 1
 
 
 
-var a_value = (/* inlined export .value */42);
-export { a_value as value, helper };
+export { helper, value };
 export { readFile } from "fs";
 export { join } from "path";
 
@@ -38,5 +37,6 @@ it('should dynamically import modules from multi-module chunk with mixed re-expo
 	expect(modB.join).toBeDefined()
 })
 
+export {};
 
 ```

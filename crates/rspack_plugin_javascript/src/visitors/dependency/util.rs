@@ -3,10 +3,8 @@ use std::sync::LazyLock;
 use rspack_core::DependencyRange;
 use rspack_error::{Diagnostic, Error, Severity};
 use rspack_regex::RspackRegex;
-use swc_core::{
-  atoms::Atom,
-  ecma::ast::{Expr, MemberExpr, OptChainBase},
-};
+use swc_atoms::Atom;
+use swc_experimental_ecma_ast::{Expr, Lit, MemberExpr, OptChainBase};
 
 use super::JavascriptParser;
 
@@ -22,16 +20,20 @@ pub mod expr_name {
   pub const REQUIRE: &str = "require";
   pub const REQUIRE_RESOLVE: &str = "require.resolve";
   pub const REQUIRE_RESOLVE_WEAK: &str = "require.resolveWeak";
+  pub const IMPORT_META_PREFIX: &str = "import.meta.";
   pub const IMPORT_META: &str = "import.meta";
   pub const IMPORT_META_FILENAME: &str = "import.meta.filename";
   pub const IMPORT_META_DIRNAME: &str = "import.meta.dirname";
   pub const IMPORT_META_URL: &str = "import.meta.url";
   pub const IMPORT_META_RESOLVE: &str = "import.meta.resolve";
   pub const IMPORT_META_VERSION: &str = "import.meta.webpack";
+  pub const IMPORT_META_MAIN: &str = "import.meta.main";
+  pub const IMPORT_META_RSPACK_RSC: &str = "import.meta.rspackRsc";
   pub const IMPORT_META_HOT: &str = "import.meta.webpackHot";
   pub const IMPORT_META_HOT_ACCEPT: &str = "import.meta.webpackHot.accept";
   pub const IMPORT_META_HOT_DECLINE: &str = "import.meta.webpackHot.decline";
   pub const IMPORT_META_CONTEXT: &str = "import.meta.webpackContext";
+  pub const IMPORT_META_GLOB: &str = "import.meta.glob";
 }
 
 pub fn parse_order_string(x: &str) -> Option<i32> {
@@ -40,6 +42,27 @@ pub fn parse_order_string(x: &str) -> Option<i32> {
     "false" => None,
     _ => x.parse::<i32>().ok(),
   }
+}
+
+pub fn static_string_from_expr(expr: &Expr) -> Option<String> {
+  expr
+    .as_lit()
+    .and_then(|lit| {
+      if let Lit::Str(str) = lit {
+        return Some(str.value.to_string_lossy().to_string());
+      }
+      None
+    })
+    .or_else(|| {
+      if let Some(tpl) = expr.as_tpl()
+        && tpl.exprs.is_empty()
+        && tpl.quasis.len() == 1
+        && let Some(el) = tpl.quasis.first()
+      {
+        return Some(el.raw.to_string());
+      }
+      None
+    })
 }
 
 pub fn create_traceable_error(
@@ -113,20 +136,23 @@ pub fn get_non_optional_part<'a>(members: &'a [Atom], members_optionals: &[bool]
   }
 }
 
-pub fn get_non_optional_member_chain_from_expr(mut expr: &Expr, mut count: i32) -> &Expr {
+pub fn get_non_optional_member_chain_from_expr<'a>(
+  mut expr: &'a Expr<'a>,
+  mut count: i32,
+) -> &'a Expr<'a> {
   while count != 0 {
     if let Expr::Member(member) = expr {
       expr = &member.obj;
       count -= 1;
     } else if let Expr::OptChain(opt_chain) = expr {
-      expr = match &*opt_chain.base {
-        OptChainBase::Member(member) => &*member.obj,
+      expr = match &opt_chain.base {
+        OptChainBase::Member(member) => &member.obj,
         OptChainBase::Call(call) if call.callee.as_member().is_some() => {
           let member = call
             .callee
             .as_member()
             .expect("`call.callee` is `MemberExpr` in `if_guard`");
-          &*member.obj
+          &member.obj
         }
         _ => unreachable!(),
       };
@@ -138,7 +164,10 @@ pub fn get_non_optional_member_chain_from_expr(mut expr: &Expr, mut count: i32) 
   expr
 }
 
-pub fn get_non_optional_member_chain_from_member(member: &MemberExpr, mut count: i32) -> &Expr {
+pub fn get_non_optional_member_chain_from_member<'a>(
+  member: &'a MemberExpr<'a>,
+  mut count: i32,
+) -> &'a Expr<'a> {
   count -= 1;
   get_non_optional_member_chain_from_expr(&member.obj, count)
 }

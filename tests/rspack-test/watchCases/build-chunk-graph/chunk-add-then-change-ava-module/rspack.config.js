@@ -1,10 +1,13 @@
 /** @type {import("@rspack/core").Configuration} */
 module.exports = {
-	optimization: {
-		splitChunks: false,
-		sideEffects: false
-	},
-	incremental: {
-		buildChunkGraph: true
-	}
+  externals: {
+    '@rspack/test-tools': 'commonjs @rspack/test-tools',
+  },
+  optimization: {
+    splitChunks: false,
+    sideEffects: false,
+  },
+  incremental: {
+    buildChunkGraph: true,
+  },
 };

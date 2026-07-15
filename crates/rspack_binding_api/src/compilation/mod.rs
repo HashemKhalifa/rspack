@@ -12,7 +12,7 @@ use dependencies::JsDependencies;
 use diagnostics::Diagnostics;
 use entries::JsEntries;
 use napi_derive::napi;
-use rspack_collections::{DatabaseItem, IdentifierSet};
+use rspack_collections::IdentifierSet;
 use rspack_core::{
   BindingCell, BoxDependency, Compilation, CompilationId, EntryOptions, ExportsInfoArtifact,
   FactorizeInfo, ModuleIdentifier, OptimizationBailoutItem, Reflector, rspack_sources::BoxSource,
@@ -104,7 +104,8 @@ impl JsCompilation {
           let new_source = match new_source_or_function {
             Either::A(new_source) => new_source.try_into()?,
             Either::B(new_source_fn) => {
-              let js_compat_source = new_source_fn.call(original_source.as_ref().try_into()?)?;
+              let js_compat_source =
+                new_source_fn.call(JsSourceToJs::try_from(&original_source)?)?;
               js_compat_source.try_into()?
             }
           };
@@ -191,11 +192,7 @@ impl JsCompilation {
     compilation
       .assets()
       .get(&name)
-      .and_then(|v| {
-        v.source
-          .as_ref()
-          .map(|s| JsSourceToJs::try_from(s.as_ref()))
-      })
+      .and_then(|v| v.source.as_ref().map(JsSourceToJs::try_from))
       .transpose()
   }
 
@@ -526,8 +523,10 @@ impl JsCompilation {
   pub fn get_asset_path(&self, filename: String, data: JsPathData) -> Result<String> {
     let compilation = self.as_ref()?;
     #[allow(clippy::disallowed_methods)]
-    futures::executor::block_on(compilation.get_asset_path(&filename.into(), data.to_path_data()))
-      .to_napi_result()
+    futures::executor::block_on(
+      compilation.get_asset_path(&filename.into(), data.to_path_data(compilation)?),
+    )
+    .to_napi_result()
   }
 
   #[napi]
@@ -540,7 +539,7 @@ impl JsCompilation {
 
     #[allow(clippy::disallowed_methods)]
     let res = futures::executor::block_on(
-      compilation.get_asset_path_with_info(&filename.into(), data.to_path_data()),
+      compilation.get_asset_path_with_info(&filename.into(), data.to_path_data(compilation)?),
     )
     .to_napi_result()?;
     Ok(res.into())
@@ -550,8 +549,10 @@ impl JsCompilation {
   pub fn get_path(&self, filename: String, data: JsPathData) -> Result<String> {
     let compilation = self.as_ref()?;
     #[allow(clippy::disallowed_methods)]
-    futures::executor::block_on(compilation.get_path(&filename.into(), data.to_path_data()))
-      .to_napi_result()
+    futures::executor::block_on(
+      compilation.get_path(&filename.into(), data.to_path_data(compilation)?),
+    )
+    .to_napi_result()
   }
 
   #[napi]
@@ -563,7 +564,7 @@ impl JsCompilation {
     #[allow(clippy::disallowed_methods)]
     let path = futures::executor::block_on(compilation.get_path_with_info(
       &filename.into(),
-      data.to_path_data(),
+      data.to_path_data(compilation)?,
       &mut asset_info,
     ))
     .to_napi_result()?;
@@ -622,10 +623,10 @@ impl JsCompilation {
   ) -> Result<(), ErrorCode> {
     let compilation = self
       .as_mut()
-      .map_err(|err| napi::Error::new(err.status.into(), err.reason.clone()))?;
+      .map_err(|err| napi::Error::new(err.status.into(), err.reason))?;
     let exports_info_artifact = self
       .exports_info_artifact_mut()
-      .map_err(|err| napi::Error::new(err.status.into(), err.reason.clone()))?;
+      .map_err(|err| napi::Error::new(err.status.into(), err.reason))?;
     let compiler_context = compilation.compiler_context.clone();
     callbackify(
       f,
@@ -672,7 +673,7 @@ impl JsCompilation {
   ) -> Result<(), ErrorCode> {
     let compilation = self
       .as_ref()
-      .map_err(|err| napi::Error::new(err.status.into(), err.reason.clone()))?;
+      .map_err(|err| napi::Error::new(err.status.into(), err.reason))?;
     let compiler_context = compilation.compiler_context.clone();
     callbackify(
       callback,
@@ -770,7 +771,7 @@ impl JsCompilation {
   ) -> napi::Result<(), ErrorCode> {
     let compilation = self
       .as_mut()
-      .map_err(|err| napi::Error::new(err.status.into(), err.reason.clone()))?;
+      .map_err(|err| napi::Error::new(err.status.into(), err.reason))?;
 
     within_compiler_context_sync(compilation.compiler_context.clone(), || {
       let Some(mut compiler_reference) = COMPILER_REFERENCES.with(|ref_cell| {
@@ -820,7 +821,7 @@ impl JsCompilation {
           Ok((dependency, options))
         })
         .collect::<napi::Result<Vec<(BoxDependency, EntryOptions)>>>()
-        .map_err(|err| napi::Error::new(err.status.into(), err.reason.clone()))?;
+        .map_err(|err| napi::Error::new(err.status.into(), err.reason))?;
 
       callbackify(
         f,
@@ -874,7 +875,7 @@ impl JsCompilation {
   ) -> napi::Result<(), ErrorCode> {
     let compilation = self
       .as_mut()
-      .map_err(|err| napi::Error::new(err.status.into(), err.reason.clone()))?;
+      .map_err(|err| napi::Error::new(err.status.into(), err.reason))?;
 
     let Some(mut compiler_reference) = COMPILER_REFERENCES.with(|ref_cell| {
       let references = ref_cell.borrow_mut();
@@ -924,7 +925,7 @@ impl JsCompilation {
           Ok((dependency, options))
         })
         .collect::<napi::Result<Vec<(BoxDependency, EntryOptions)>>>()
-        .map_err(|err| napi::Error::new(err.status.into(), err.reason.clone()))?;
+        .map_err(|err| napi::Error::new(err.status.into(), err.reason))?;
 
       callbackify(
         f,

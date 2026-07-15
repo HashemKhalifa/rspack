@@ -25,6 +25,7 @@ mod process_assets;
 mod run_passes;
 mod runtime_requirements;
 mod seal;
+
 use std::{
   collections::{VecDeque, hash_map},
   fmt::{self, Debug},
@@ -38,44 +39,56 @@ use std::{
 
 use dashmap::DashSet;
 use futures::future::BoxFuture;
-use indexmap::IndexMap;
 use itertools::Itertools;
 use rayon::prelude::*;
 use rspack_cacheable::{
   cacheable,
-  with::{AsOption, AsPreset},
+  with::{AsOption, AsPreset, AsVec},
 };
-use rspack_collections::{DatabaseItem, IdentifierDashMap, IdentifierMap, IdentifierSet};
+use rspack_collections::{Identifier, IdentifierDashMap, IdentifierMap, IdentifierSet};
 use rspack_error::{Diagnostic, Result, ToStringResultToRspackResultExt};
 use rspack_fs::{IntermediateFileSystem, ReadableFileSystem, WritableFileSystem};
-use rspack_hash::{RspackHash, RspackHashDigest};
+use rspack_hash::{RspackHashDigest, RspackHasher};
 use rspack_hook::define_hook;
 use rspack_paths::{ArcPath, ArcPathIndexSet, ArcPathSet};
 use rspack_sources::BoxSource;
 use rspack_tasks::CompilerContext;
 #[cfg(allocative)]
 use rspack_util::allocative;
-use rspack_util::{itoa, tracing_preset::TRACING_BENCH_TARGET};
+use rspack_util::{fx_hash::FxIndexMap, itoa, tracing_preset::TRACING_BENCH_TARGET};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
+use smol_str::SmolStr;
 use tracing::instrument;
 use ustr::Ustr;
 
+#[cfg(feature = "codspeed")]
+pub use self::{
+  assign_runtime_ids::AssignRuntimeIdsPass, code_generation::CodeGenerationPass,
+  create_chunk_assets::CreateChunkAssetsPass, create_hash::CreateHashPass,
+  create_module_assets::CreateModuleAssetsPass, create_module_hashes::CreateModuleHashesPass,
+  optimize_code_generation::OptimizeCodeGenerationPass, process_assets::ProcessAssetsPass,
+  runtime_requirements::RuntimeRequirementsPass,
+};
 use crate::{
   AsyncModulesArtifact, BindingCell, BoxDependency, BoxModule, BuildChunkGraphArtifact, CacheCount,
   CacheOptions, CgcRuntimeRequirementsArtifact, CgmHashArtifact, CgmRuntimeRequirementsArtifact,
   Chunk, ChunkByUkey, ChunkContentHash, ChunkGraph, ChunkGroupByUkey, ChunkGroupUkey,
   ChunkHashesArtifact, ChunkKind, ChunkNamedIdArtifact, ChunkRenderArtifact,
-  ChunkRenderCacheArtifact, ChunkRenderResult, ChunkUkey, CodeGenerateCacheArtifact,
-  CodeGenerationJob, CodeGenerationResult, CodeGenerationResults, CompilationLogger,
-  CompilationLogging, CompilerOptions, CompilerPlatform, ConcatenationScope,
+  ChunkRenderCacheArtifact, ChunkRenderResult, ChunkUkey, CircularModulesInfo,
+  CodeGenerateCacheArtifact, CodeGenerationJob, CodeGenerationResult, CodeGenerationResults,
+  CompilationLogger, CompilationLogging, CompilerOptions, CompilerPlatform, ConcatenationScope,
   DependenciesDiagnosticsArtifact, DependencyId, DependencyTemplate, DependencyTemplateType,
   DependencyType, Entry, EntryData, EntryOptions, EntryRuntime, Entrypoint, ExecuteModuleId,
   ExportsInfoArtifact, ExtendedReferencedExport, Filename, ImportPhase, ImportVarMap,
   ImportedByDeferModulesArtifact, MemoryGCStorage, ModuleFactory, ModuleGraph,
   ModuleGraphCacheArtifact, ModuleIdentifier, ModuleIdsArtifact, ModuleStaticCache, PathData,
   ProcessRuntimeRequirementsCacheArtifact, ResolverFactory, RuntimeGlobals, RuntimeKeyMap,
-  RuntimeMode, RuntimeModule, RuntimeSpec, RuntimeSpecMap, RuntimeTemplate, SharedPluginDriver,
-  SideEffectsOptimizeArtifact, SourceType, Stats, StatsContext, StealCell, ValueCacheVersions,
+  RuntimeMode, RuntimeModule, RuntimeProxyMetadataArtifact, RuntimeSpec, RuntimeSpecMap,
+  RuntimeTemplate, SharedPluginDriver, SideEffectsOptimizeArtifact, SideEffectsStateArtifact,
+  SourceType, Stats, StatsContext, StealCell, ValueCacheVersions,
+  cache::persistent::occasion::{
+    devtool::SourceMapDevToolPluginCacheArtifact, minimize::MinimizePersistentCacheArtifact,
+  },
   compilation::build_module_graph::{
     BuildModuleGraphArtifact, ModuleExecutor, UpdateParam, update_module_graph,
   },
@@ -91,8 +104,8 @@ define_hook!(CompilationRevokedModules: Series(compilation: &Compilation, revoke
 define_hook!(CompilationStillValidModule: Series(compiler_id: CompilerId, compilation_id: CompilationId, module: &mut BoxModule));
 define_hook!(CompilationSucceedModule: Series(compiler_id: CompilerId, compilation_id: CompilationId, module: &mut BoxModule),tracing=false);
 define_hook!(CompilationExecuteModule:
-  Series(module: &ModuleIdentifier, runtime_modules: &IdentifierSet, code_generation_results: &BindingCell<CodeGenerationResults>, execute_module_id: &ExecuteModuleId));
-define_hook!(CompilationFinishModules: Series(compilation: &Compilation, async_modules_artifact: &mut AsyncModulesArtifact, exports_info_artifact: &mut ExportsInfoArtifact));
+  Series(module: &ModuleIdentifier, runtime_modules: &[Identifier], code_generation_results: &BindingCell<CodeGenerationResults>, execute_module_id: &ExecuteModuleId));
+define_hook!(CompilationFinishModules: Series(compilation: &Compilation, async_modules_artifact: &mut AsyncModulesArtifact, exports_info_artifact: &mut ExportsInfoArtifact, side_effects_state_artifact: &mut SideEffectsStateArtifact));
 define_hook!(CompilationSeal: Series(compilation: &Compilation, diagnostics: &mut Vec<Diagnostic>));
 define_hook!(CompilationDependencyReferencedExports: Sync(
   compilation: &Compilation,
@@ -104,13 +117,15 @@ define_hook!(CompilationDependencyReferencedExports: Sync(
 define_hook!(CompilationConcatenationScope: SeriesBail(compilation: &Compilation, curr_module: ModuleIdentifier) -> ConcatenationScope);
 define_hook!(CompilationOptimizeDependencies: SeriesBail(compilation: &Compilation, side_effects_optimize_artifact: &mut SideEffectsOptimizeArtifact,  build_module_graph_artifact: &mut BuildModuleGraphArtifact, exports_info_artifact: &mut ExportsInfoArtifact,
  diagnostics: &mut Vec<Diagnostic>) -> bool);
-define_hook!(CompilationOptimizeModules: SeriesBail(compilation: &Compilation, diagnostics: &mut Vec<Diagnostic>) -> bool);
+define_hook!(CompilationOptimizeModules: SeriesBail(compilation: &Compilation, circular_modules: &mut CircularModulesInfo, diagnostics: &mut Vec<Diagnostic>) -> bool);
 define_hook!(CompilationAfterOptimizeModules: Series(compilation: &Compilation));
 define_hook!(CompilationOptimizeChunks: SeriesBail(compilation: &mut Compilation) -> bool);
 define_hook!(CompilationOptimizeTree: Series(compilation: &Compilation));
 define_hook!(CompilationOptimizeChunkModules: SeriesBail(compilation: &mut Compilation) -> bool);
+define_hook!(CompilationReviveModules: Series(compilation: &Compilation, modules: &IdentifierSet, module_ids: &mut ModuleIdsArtifact));
 define_hook!(CompilationBeforeModuleIds: Series(compilation: &Compilation, modules: &IdentifierSet, module_ids: &mut ModuleIdsArtifact));
 define_hook!(CompilationModuleIds: Series(compilation: &Compilation, module_ids: &mut ModuleIdsArtifact, diagnostics: &mut Vec<Diagnostic>));
+define_hook!(CompilationRecordModules: Series(compilation: &Compilation, module_ids: &ModuleIdsArtifact));
 define_hook!(CompilationChunkIds: Series(compilation: &Compilation, chunk_by_ukey: &mut ChunkByUkey, named_chunk_ids_artifact: &mut ChunkNamedIdArtifact, diagnostics: &mut Vec<Diagnostic>));
 define_hook!(CompilationRuntimeModule: Series(compilation: &Compilation, module: &ModuleIdentifier, chunk: &ChunkUkey, runtime_modules: &mut IdentifierMap<Box<dyn RuntimeModule>>));
 define_hook!(CompilationAdditionalModuleRuntimeRequirements: Series(compilation: &Compilation, module_identifier: &ModuleIdentifier, runtime_requirements: &mut RuntimeGlobals),tracing=false);
@@ -121,8 +136,8 @@ define_hook!(CompilationAdditionalTreeRuntimeRequirements: Series(compilation: &
 define_hook!(CompilationRuntimeRequirementInTree: SeriesBail(compilation: &Compilation, chunk_ukey: &ChunkUkey, all_runtime_requirements: &RuntimeGlobals, runtime_requirements: &RuntimeGlobals, runtime_requirements_mut: &mut RuntimeGlobals, runtime_modules_to_add: &mut Vec<(ChunkUkey, Box<dyn RuntimeModule>)>));
 define_hook!(CompilationOptimizeCodeGeneration: Series(compilation: &Compilation, build_module_graph_artifact: &mut BuildModuleGraphArtifact, exports_info_artifact: &mut ExportsInfoArtifact, diagnostics: &mut Vec<Diagnostic>));
 define_hook!(CompilationAfterCodeGeneration: Series(compilation: &Compilation, diagnostics: &mut Vec<Diagnostic>));
-define_hook!(CompilationChunkHash: Series(compilation: &Compilation, chunk_ukey: &ChunkUkey, hasher: &mut RspackHash),tracing=false);
-define_hook!(CompilationContentHash: Series(compilation: &Compilation, chunk_ukey: &ChunkUkey, hashes: &mut HashMap<SourceType, RspackHash>));
+define_hook!(CompilationChunkHash: Series(compilation: &Compilation, chunk_ukey: &ChunkUkey, hasher: &mut RspackHasher),tracing=false);
+define_hook!(CompilationContentHash: Series(compilation: &Compilation, chunk_ukey: &ChunkUkey, hashes: &mut HashMap<SourceType, RspackHasher>));
 define_hook!(CompilationDependentFullHash: Sync(compilation: &Compilation, chunk_ukey: &ChunkUkey, dependent_full_hash: &mut bool));
 define_hook!(CompilationRenderManifest: Series(compilation: &Compilation, chunk_ukey: &ChunkUkey, manifest: &mut Vec<RenderManifestEntry>, diagnostics: &mut Vec<Diagnostic>),tracing=false);
 define_hook!(CompilationChunkAsset: Series(compilation: &Compilation, chunk_ukey: &ChunkUkey, filename: &str));
@@ -148,8 +163,10 @@ pub struct CompilationHooks {
   pub optimize_chunks: CompilationOptimizeChunksHook,
   pub optimize_tree: CompilationOptimizeTreeHook,
   pub optimize_chunk_modules: CompilationOptimizeChunkModulesHook,
+  pub revive_modules: CompilationReviveModulesHook,
   pub before_module_ids: CompilationBeforeModuleIdsHook,
   pub module_ids: CompilationModuleIdsHook,
+  pub record_modules: CompilationRecordModulesHook,
   pub chunk_ids: CompilationChunkIdsHook,
   pub runtime_module: CompilationRuntimeModuleHook,
   pub additional_module_runtime_requirements: CompilationAdditionalModuleRuntimeRequirementsHook,
@@ -202,7 +219,7 @@ pub struct Compilation {
   // The status is different, should generate different hash for `.hot-update.js`
   // So use compilation hash update `hot_index` to fix it.
   pub hot_index: u32,
-  pub records: Option<CompilationRecords>,
+  pub records: Option<Arc<CompilationRecords>>,
   pub options: Arc<CompilerOptions>,
   pub platform: Arc<CompilerPlatform>,
   pub entries: Entry,
@@ -243,6 +260,8 @@ pub struct Compilation {
   pub cgm_runtime_requirements_artifact: StealCell<CgmRuntimeRequirementsArtifact>,
   // artifact for process_chunks_runtime_requirements
   pub cgc_runtime_requirements_artifact: StealCell<CgcRuntimeRequirementsArtifact>,
+  // artifact for rspack runtime proxy metadata
+  pub runtime_proxy_metadata_artifact: StealCell<RuntimeProxyMetadataArtifact>,
   // artifact for create_hash
   pub chunk_hashes_artifact: StealCell<ChunkHashesArtifact>,
   // artifact for create_chunk_assets
@@ -260,6 +279,11 @@ pub struct Compilation {
     StealCell<ProcessRuntimeRequirementsCacheArtifact>,
   pub imported_by_defer_modules_artifact: StealCell<ImportedByDeferModulesArtifact>,
 
+  pub minimize_persistent_cache_artifact: Option<MinimizePersistentCacheArtifact>,
+  pub use_source_map_dev_tool_plugin_cache: bool,
+  pub source_map_dev_tool_plugin_cache_artifact: Option<SourceMapDevToolPluginCacheArtifact>,
+
+  pub circular_modules: StealCell<CircularModulesInfo>,
   pub code_generated_modules: IdentifierSet,
   pub build_time_executed_modules: IdentifierSet,
   pub build_chunk_graph_artifact: BuildChunkGraphArtifact,
@@ -326,9 +350,10 @@ impl Compilation {
     buildtime_plugin_driver: SharedPluginDriver,
     resolver_factory: Arc<ResolverFactory>,
     loader_resolver_factory: Arc<ResolverFactory>,
-    records: Option<CompilationRecords>,
+    records: Option<Arc<CompilationRecords>>,
     incremental: Incremental,
     module_executor: Option<ModuleExecutor>,
+    logging: CompilationLogging,
     modified_files: ArcPathSet,
     removed_files: ArcPathSet,
     input_filesystem: Arc<dyn ReadableFileSystem>,
@@ -356,7 +381,7 @@ impl Compilation {
       assets_related_in: Default::default(),
       emitted_assets: Default::default(),
       diagnostics: Default::default(),
-      logging: Default::default(),
+      logging,
       plugin_driver,
       buildtime_plugin_driver,
       resolver_factory,
@@ -364,6 +389,7 @@ impl Compilation {
 
       async_modules_artifact: StealCell::new(AsyncModulesArtifact::default()),
       imported_by_defer_modules_artifact: StealCell::new(Default::default()),
+      circular_modules: StealCell::new(CircularModulesInfo::default()),
       dependencies_diagnostics_artifact: StealCell::new(DependenciesDiagnosticsArtifact::default()),
       exports_info_artifact: StealCell::new(ExportsInfoArtifact::default()),
       side_effects_optimize_artifact: StealCell::new(Default::default()),
@@ -373,6 +399,7 @@ impl Compilation {
       cgm_hash_artifact: StealCell::new(Default::default()),
       cgm_runtime_requirements_artifact: StealCell::new(Default::default()),
       cgc_runtime_requirements_artifact: StealCell::new(Default::default()),
+      runtime_proxy_metadata_artifact: StealCell::new(Default::default()),
       chunk_hashes_artifact: StealCell::new(Default::default()),
       chunk_render_artifact: StealCell::new(Default::default()),
       module_graph_cache_artifact: StealCell::new(Default::default()),
@@ -389,6 +416,9 @@ impl Compilation {
       process_runtime_requirements_cache_artifact: StealCell::new(
         ProcessRuntimeRequirementsCacheArtifact::new(&options),
       ),
+      minimize_persistent_cache_artifact: None,
+      use_source_map_dev_tool_plugin_cache: false,
+      source_map_dev_tool_plugin_cache_artifact: None,
       build_time_executed_modules: Default::default(),
       incremental,
       build_chunk_graph_artifact: Default::default(),
@@ -585,7 +615,7 @@ impl Compilation {
     let len = import_var_map_of_module.len();
     let is_deferred = phase.is_defer()
       && !target_module
-        .map(|m| m.build_meta().has_top_level_await)
+        .map(|m| m.build_meta().has_top_level_await())
         .unwrap_or_default();
 
     match import_var_map_of_module.entry((target_module.map(|m| m.identifier()), is_deferred)) {
@@ -917,7 +947,7 @@ impl Compilation {
     &mut self.assets
   }
 
-  pub fn entrypoints(&self) -> &IndexMap<String, ChunkGroupUkey> {
+  pub fn entrypoints(&self) -> &FxIndexMap<String, ChunkGroupUkey> {
     &self.build_chunk_graph_artifact.entrypoints
   }
 
@@ -1322,7 +1352,8 @@ pub struct AssetInfo {
   /// An empty string means no version, it will always emit
   pub version: String,
   /// unused local idents of the chunk
-  pub css_unused_idents: Option<HashSet<String>>,
+  #[cacheable(with=AsOption<AsVec<AsPreset>>)]
+  pub css_unused_idents: Option<HashSet<SmolStr>>,
   /// whether this asset is over the size limit
   pub is_over_size_limit: Option<bool>,
   /// the plugin that created the asset
@@ -1385,7 +1416,7 @@ impl AssetInfo {
     self.javascript_module = Some(v);
   }
 
-  pub fn set_css_unused_idents(&mut self, v: HashSet<String>) {
+  pub fn set_css_unused_idents(&mut self, v: HashSet<SmolStr>) {
     self.css_unused_idents = Some(v);
   }
 
@@ -1447,9 +1478,12 @@ pub fn assign_depths<'a>(
   assign_map: &mut IdentifierMap<usize>,
   modules: impl Iterator<Item = &'a ModuleIdentifier>,
   outgoings: &IdentifierMap<Vec<ModuleIdentifier>>,
+  initial_queue_capacity: usize,
 ) {
   // https://github.com/webpack/webpack/blob/1f99ad6367f2b8a6ef17cce0e058f7a67fb7db18/lib/Compilation.js#L3720
-  let mut q = VecDeque::new();
+  let (module_count_lower_bound, module_count_upper_bound) = modules.size_hint();
+  let module_count = module_count_upper_bound.unwrap_or(module_count_lower_bound);
+  let mut q = VecDeque::with_capacity(initial_queue_capacity.max(module_count));
   for item in modules {
     q.push_back((*item, 0));
   }
@@ -1462,8 +1496,10 @@ pub fn assign_depths<'a>(
         vac.insert(depth);
       }
     };
-    for con in outgoings.get(&id).expect("should have outgoings").iter() {
-      q.push_back((*con, depth + 1));
+    if let Some(outgoing_modules) = outgoings.get(&id) {
+      for con in outgoing_modules {
+        q.push_back((*con, depth + 1));
+      }
     }
   }
 }

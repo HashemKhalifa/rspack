@@ -263,7 +263,6 @@ pub fn collect_expose_requirements(
   links: Vec<(String, String)>,
   expose_module_paths: &HashMap<String, String>,
 ) {
-  #[cfg(debug_assertions)]
   for (shared_key, expose_key) in links {
     if let Some(expose) = exposes_map.get_mut(&expose_key)
       && let Some(shared) = shared_map.get_mut(&shared_key)

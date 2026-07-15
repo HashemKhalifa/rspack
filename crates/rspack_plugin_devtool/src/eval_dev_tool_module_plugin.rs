@@ -1,7 +1,6 @@
-use std::{borrow::Cow, hash::Hash};
+use std::borrow::Cow;
 
 use cow_utils::CowUtils;
-use dashmap::DashMap;
 use derive_more::Debug;
 use rspack_core::{
   ChunkInitFragments, ChunkUkey, Compilation, CompilationAdditionalModuleRuntimeRequirements,
@@ -10,15 +9,17 @@ use rspack_core::{
   rspack_sources::{BoxSource, RawStringSource, Source, SourceExt},
 };
 use rspack_error::Result;
-use rspack_hash::RspackHash;
+use rspack_hash::{RspackHash, RspackHasher};
 use rspack_hook::{plugin, plugin_hook};
 use rspack_plugin_javascript::{
   JavascriptModulesChunkHash, JavascriptModulesInlineInRuntimeBailout,
   JavascriptModulesRenderModuleContent, JsPlugin, RenderSource,
 };
+use rspack_util::{fx_hash::FxDashMap, json_stringify_str};
 
 use crate::{
-  ModuleFilenameTemplate, SourceReference, module_filename_helpers::ModuleFilenameHelpers,
+  ModuleFilenameTemplate, SourceReference, default_eval_module_filename_template,
+  module_filename_helpers::ModuleFilenameHelpers,
 };
 
 #[derive(Clone, Debug)]
@@ -37,8 +38,8 @@ pub struct EvalDevToolModulePlugin {
   namespace: String,
   source_url_comment: String,
   #[debug(skip)]
-  module_filename_template: ModuleFilenameTemplate,
-  cache: DashMap<BoxSource, BoxSource>,
+  module_filename_template: Option<ModuleFilenameTemplate>,
+  cache: FxDashMap<BoxSource, BoxSource>,
 }
 
 impl EvalDevToolModulePlugin {
@@ -49,17 +50,10 @@ impl EvalDevToolModulePlugin {
       .source_url_comment
       .unwrap_or("\n//# sourceURL=[url]".to_string());
 
-    let module_filename_template =
-      options
-        .module_filename_template
-        .unwrap_or(ModuleFilenameTemplate::String(
-          "webpack://[namespace]/[resource-path]?[hash]".to_string(),
-        ));
-
     Self::new_inner(
       namespace,
       source_url_comment,
-      module_filename_template,
+      options.module_filename_template,
       Default::default(),
     )
   }
@@ -92,7 +86,7 @@ async fn render_module_content(
   module: &dyn Module,
   render_source: &mut RenderSource,
   _init_fragments: &mut ChunkInitFragments,
-  runtime_template: &RuntimeCodeTemplate<'_>,
+  runtime_template: &RuntimeCodeTemplate,
 ) -> Result<()> {
   let origin_source = render_source.source.clone();
   if let Some(cached_source) = self.cache.get(&origin_source) {
@@ -110,6 +104,7 @@ async fn render_module_content(
     return Ok(());
   };
   let path_data = PathData::default()
+    .chunk(chunk.ukey(), compilation)
     .chunk_id_optional(chunk.id().map(|id| id.as_str()))
     .chunk_name_optional(chunk.name())
     .chunk_hash_optional(chunk.rendered_hash(
@@ -121,7 +116,13 @@ async fn render_module_content(
   let namespace = compilation.get_path(&filename, path_data).await?;
 
   let output_options = &compilation.options.output;
-  let str = match &self.module_filename_template {
+  let default_module_filename_template =
+    default_eval_module_filename_template(compilation.options.experiments.runtime_mode);
+  let module_filename_template = self
+    .module_filename_template
+    .as_ref()
+    .unwrap_or(default_module_filename_template);
+  let str = match module_filename_template {
     ModuleFilenameTemplate::String(s) => ModuleFilenameHelpers::create_filename_of_string_template(
       &SourceReference::Module(module.identifier()),
       compilation,
@@ -157,8 +158,7 @@ async fn render_module_content(
       )
     );
 
-    let module_content =
-      simd_json::to_string(&format!("{{{source}{footer}\n}}")).expect("failed to parse string");
+    let module_content = json_stringify_str(&format!("{{{source}{footer}\n}}"));
     RawStringSource::from(format!(
       "eval({});",
       if compilation.options.output.trusted_types.is_some() {
@@ -184,7 +184,7 @@ async fn js_chunk_hash(
   &self,
   _compilation: &Compilation,
   _chunk_ukey: &ChunkUkey,
-  hasher: &mut RspackHash,
+  hasher: &mut RspackHasher,
 ) -> Result<()> {
   EVAL_DEV_TOOL_MODULE_PLUGIN_NAME.hash(hasher);
   Ok(())

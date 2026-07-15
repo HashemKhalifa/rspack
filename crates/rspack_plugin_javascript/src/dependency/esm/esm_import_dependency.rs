@@ -8,11 +8,11 @@ use rspack_core::{
   ExportProvided, ExportsInfoArtifact, ExportsType, ExtendedReferencedExport, FactorizeInfo,
   ForwardId, ImportAttributes, ImportPhase, InitFragmentExt, InitFragmentKey, InitFragmentStage,
   LazyUntil, ModuleDependency, ModuleGraph, ModuleGraphCacheArtifact, ModuleIdentifier,
-  PrefetchExportsInfoMode, ProvidedExports, ResourceIdentifier, RuntimeCondition, RuntimeSpec,
+  ProvidedExports, ResourceIdentifier, RuntimeCondition, RuntimeSpec, SideEffectsStateArtifact,
   SourceType, TemplateContext, TemplateReplaceSource, TypeReexportPresenceMode, filter_runtime,
 };
 use rspack_error::{Diagnostic, Error, Severity};
-use swc_core::ecma::atoms::Atom;
+use swc_atoms::Atom;
 
 use super::create_resource_identifier_for_esm_dependency;
 
@@ -86,7 +86,7 @@ impl ESMImportSideEffectDependency {
     star_export: bool,
   ) -> Self {
     let resource_identifier =
-      create_resource_identifier_for_esm_dependency(&request, attributes.as_ref());
+      create_resource_identifier_for_esm_dependency(&request, phase, attributes.as_ref());
     Self {
       id: DependencyId::new(),
       source_order,
@@ -103,8 +103,8 @@ impl ESMImportSideEffectDependency {
     }
   }
 
-  pub fn set_lazy(&mut self) {
-    self.lazy_make = true;
+  fn missing_module_active(&self) -> bool {
+    !self.lazy_make
   }
 }
 
@@ -130,6 +130,9 @@ pub fn esm_import_dependency_apply<T: ModuleDependency>(
       module_graph,
       *runtime,
       module_graph_cache,
+      &compilation
+        .build_module_graph_artifact
+        .side_effects_state_artifact,
       &compilation.exports_info_artifact,
     )
   } else {
@@ -164,6 +167,9 @@ pub fn esm_import_dependency_apply<T: ModuleDependency>(
         module_graph,
         r,
         module_graph_cache,
+        &compilation
+          .build_module_graph_artifact
+          .side_effects_state_artifact,
         &compilation.exports_info_artifact,
       )
     })
@@ -291,7 +297,7 @@ pub fn esm_import_dependency_get_linking_error<T: ModuleDependency>(
     module_graph,
     module_graph_cache,
     exports_info_artifact,
-    parent_module.build_meta().strict_esm_module,
+    parent_module.build_meta().strict_esm_module(),
   );
   let additional_msg = || {
     if is_reexport {
@@ -335,13 +341,10 @@ pub fn esm_import_dependency_get_linking_error<T: ModuleDependency>(
       return None;
     }
     let imported_module_identifier = imported_module.identifier();
-    let exports_info = exports_info_artifact.get_prefetched_exports_info(
-      &imported_module_identifier,
-      PrefetchExportsInfoMode::Nested(ids),
-    );
+    let exports_info = exports_info_artifact.get_exports_info_data(&imported_module_identifier);
     if (!matches!(exports_type, ExportsType::DefaultWithNamed) || ids[0] != "default")
       && matches!(
-        exports_info.is_export_provided(ids),
+        exports_info.is_export_provided(exports_info_artifact, ids),
         Some(ExportProvided::NotProvided)
       )
     {
@@ -365,11 +368,9 @@ pub fn esm_import_dependency_get_linking_error<T: ModuleDependency>(
         .is_some()
         && ids.len() == 1
         && matches!(
-          exports_info_artifact.get_prefetched_exports_info(
-            parent_module_identifier,
-            PrefetchExportsInfoMode::Default,
-          )
-            .is_export_provided(std::slice::from_ref(name)),
+          exports_info_artifact
+            .get_exports_info_data(parent_module_identifier)
+            .is_export_provided(exports_info_artifact, std::slice::from_ref(name)),
           Some(ExportProvided::Provided)
         )
       {
@@ -389,10 +390,8 @@ pub fn esm_import_dependency_get_linking_error<T: ModuleDependency>(
         }
       }
       let mut pos = 0;
-      let mut maybe_exports_info = Some(exports_info_artifact.get_prefetched_exports_info(
-        &imported_module_identifier,
-        PrefetchExportsInfoMode::Nested(ids),
-      ));
+      let mut maybe_exports_info =
+        Some(exports_info_artifact.get_exports_info_data(&imported_module_identifier));
       while pos < ids.len()
         && let Some(exports_info) = &maybe_exports_info
       {
@@ -434,7 +433,7 @@ pub fn esm_import_dependency_get_linking_error<T: ModuleDependency>(
           maybe_exports_info = None;
           continue;
         };
-        maybe_exports_info = Some(exports_info.redirect(nested_exports_info, true));
+        maybe_exports_info = Some(nested_exports_info.as_data(exports_info_artifact));
       }
       let msg = format!(
         "export {} {} was not found in '{}'",
@@ -449,6 +448,7 @@ pub fn esm_import_dependency_get_linking_error<T: ModuleDependency>(
       return Some(create_error(msg));
     }
   }
+  #[allow(clippy::collapsible_match)]
   match exports_type {
     ExportsType::DefaultOnly => {
       if !ids.is_empty() && ids[0] != "default" {
@@ -468,9 +468,12 @@ pub fn esm_import_dependency_get_linking_error<T: ModuleDependency>(
       if !ids.is_empty()
         && ids[0] != "default"
         && matches!(
-          imported_module.build_meta().default_object,
-          BuildMetaDefaultObject::RedirectWarn { ignore: false }
+          imported_module.build_meta().default_object(),
+          BuildMetaDefaultObject::RedirectWarn
         )
+        // Ignore the JSON named exports warning: this doesn't follow the standards
+        // but it's widely used by the community, other bundlers also ignore the warning.
+        && imported_module.build_info().json_data.is_none()
       {
         let msg = format!(
           "Should not import the named export {} {} from default-exporting module (only default export is available soon)",
@@ -564,6 +567,7 @@ impl Dependency for ESMImportSideEffectDependency {
     &self,
     module_graph: &ModuleGraph,
     module_graph_cache: &ModuleGraphCacheArtifact,
+    side_effects_state_artifact: &SideEffectsStateArtifact,
     module_chain: &mut IdentifierSet,
     connection_state_cache: &mut IdentifierMap<ConnectionState>,
   ) -> ConnectionState {
@@ -574,11 +578,12 @@ impl Dependency for ESMImportSideEffectDependency {
       module.get_side_effects_connection_state(
         module_graph,
         module_graph_cache,
+        side_effects_state_artifact,
         module_chain,
         connection_state_cache,
       )
     } else {
-      ConnectionState::Active(true)
+      ConnectionState::Active(self.missing_module_active())
     }
   }
 
@@ -612,6 +617,10 @@ impl Dependency for ESMImportSideEffectDependency {
         LazyUntil::NoUntil
       }
     })
+  }
+
+  fn set_lazy(&mut self) {
+    self.lazy_make = true;
   }
 
   fn unset_lazy(&mut self) -> bool {
@@ -657,18 +666,27 @@ impl DependencyConditionFn for ESMImportSideEffectDependencyCondition {
     _runtime: Option<&RuntimeSpec>,
     module_graph: &ModuleGraph,
     module_graph_cache: &ModuleGraphCacheArtifact,
+    side_effects_state_artifact: &SideEffectsStateArtifact,
     _exports_info_artifact: &ExportsInfoArtifact,
   ) -> ConnectionState {
     let id = *conn.module_identifier();
+    if let Some(state) = side_effects_state_artifact.module_evaluation_side_effects_state(&id) {
+      return state;
+    }
     if let Some(module) = module_graph.module_by_identifier(&id) {
       module.get_side_effects_connection_state(
         module_graph,
         module_graph_cache,
+        side_effects_state_artifact,
         &mut IdentifierSet::default(),
         &mut IdentifierMap::default(),
       )
     } else {
-      ConnectionState::Active(true)
+      let dependency = module_graph.dependency_by_id(&conn.dependency_id);
+      let dependency = dependency
+        .downcast_ref::<ESMImportSideEffectDependency>()
+        .expect("should be ESMImportSideEffectDependency");
+      ConnectionState::Active(dependency.missing_module_active())
     }
   }
 }
@@ -709,6 +727,10 @@ impl DependencyTemplate for ESMImportSideEffectDependencyTemplate {
     let module_graph = compilation.get_module_graph();
 
     let module = module_graph.get_module_by_dependency_id(&dep.id);
+
+    if module.is_none() && !dep.missing_module_active() {
+      return;
+    }
 
     if let Some(module) = module {
       let source_types = module.source_types(module_graph);

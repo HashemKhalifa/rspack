@@ -9,9 +9,10 @@ use rspack_core::{
   DependencyId, FactoryMeta, LibIdentOptions, Module, ModuleCodeGenerationContext, ModuleGraph,
   ModuleIdentifier, ModuleLayer, ModuleType, RuntimeGlobals, RuntimeSpec, SourceType,
   impl_module_meta_info, impl_source_map_config, module_update_hash, rspack_sources::BoxSource,
+  runtime_mode::RuntimeMode,
 };
 use rspack_error::{Result, impl_empty_diagnosable_trait};
-use rspack_hash::{RspackHash, RspackHashDigest};
+use rspack_hash::{RspackHashDigest, RspackHasher};
 use rspack_util::source_map::SourceMapKind;
 
 use super::{
@@ -21,7 +22,7 @@ use super::{
     CodeGenerationDataShareInit, DataInitInfo, ProvideSharedInfo, ShareInitData,
   },
 };
-use crate::{ConsumeVersion, ShareScope};
+use crate::{ConsumeVersion, ShareScope, utils::module_identifier_namespace};
 
 #[impl_source_map_config]
 #[cacheable]
@@ -60,8 +61,10 @@ impl ProvideSharedModule {
     strict_version: Option<bool>,
     layer: Option<String>,
     tree_shaking_mode: Option<String>,
+    runtime_mode: RuntimeMode,
   ) -> Self {
     let scopes_key = share_scope.key();
+    let namespace = module_identifier_namespace(runtime_mode);
     let identifier = format!(
       "provide shared module ({}){} {}@{} = {}",
       &scopes_key,
@@ -78,7 +81,7 @@ impl ProvideSharedModule {
       dependencies: Vec::new(),
       identifier: ModuleIdentifier::from(identifier.as_ref()),
       lib_ident: format!(
-        "{}webpack/sharing/provide/{}/{}",
+        "{}{namespace}/sharing/provide/{}/{}",
         layer
           .as_ref()
           .map(|layer| format!("({layer})/"))
@@ -109,6 +112,17 @@ impl ProvideSharedModule {
 
   pub fn share_key(&self) -> &str {
     &self.name
+  }
+
+  pub fn share_scope(&self) -> &ShareScope {
+    &self.share_scope
+  }
+
+  pub fn version(&self) -> Option<&str> {
+    match &self.version {
+      ProvideVersion::Version(version) => Some(version),
+      ProvideVersion::False => None,
+    }
   }
 }
 
@@ -243,7 +257,7 @@ impl Module for ProvideSharedModule {
     compilation: &Compilation,
     runtime: Option<&RuntimeSpec>,
   ) -> Result<RspackHashDigest> {
-    let mut hasher = RspackHash::from(&compilation.options.output);
+    let mut hasher = RspackHasher::from(&compilation.options.output);
     module_update_hash(self, &mut hasher, compilation, runtime);
     Ok(hasher.digest(&compilation.options.output.hash_digest))
   }
