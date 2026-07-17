@@ -292,7 +292,7 @@ impl ContextModule {
     Self {
       dependencies: Vec::new(),
       blocks: Vec::new(),
-      identifier: create_identifier(&options, None),
+      identifier: create_identifier(&options, None, None),
       options,
       factory_meta: None,
       build_info,
@@ -1334,9 +1334,13 @@ impl Module for ContextModule {
         self.options.resource.as_str()
       },
     );
-    create_identifier(&self.options, Some(identifier.as_str()))
-      .to_string()
-      .into()
+    create_identifier(
+      &self.options,
+      Some(identifier.as_str()),
+      Some(context.as_str()),
+    )
+    .to_string()
+    .into()
   }
 
   fn size(
@@ -1409,7 +1413,7 @@ impl Module for ContextModule {
     }
     if let Some(root_context) = &self.options.context_options.glob_root_context {
       id += " globRootContext: ";
-      id += root_context;
+      id += &contextified_glob_root_context(options.context, root_context);
     }
     Some(Cow::Owned(id))
   }
@@ -1564,7 +1568,15 @@ impl Identifiable for ContextModule {
   }
 }
 
-fn create_identifier(options: &ContextModuleOptions, resource: Option<&str>) -> Identifier {
+fn contextified_glob_root_context(context: &str, root_context: &str) -> String {
+  contextify(context, root_context)
+}
+
+fn create_identifier(
+  options: &ContextModuleOptions,
+  resource: Option<&str>,
+  context: Option<&str>,
+) -> Identifier {
   let mut id = resource
     .unwrap_or(if options.resource.as_str().is_empty() {
       "false"
@@ -1626,7 +1638,11 @@ fn create_identifier(options: &ContextModuleOptions, resource: Option<&str>) -> 
   }
   if let Some(root_context) = &options.context_options.glob_root_context {
     id += "|globRootContext: ";
-    id += root_context;
+    if let Some(context) = context {
+      id += &contextified_glob_root_context(context, root_context);
+    } else {
+      id += root_context;
+    }
   }
 
   if let Some(GroupOptions::ChunkGroup(group)) = &options.context_options.group_options {
@@ -1664,4 +1680,20 @@ fn create_identifier(options: &ContextModuleOptions, resource: Option<&str>) -> 
     id += layer;
   }
   id.into()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::contextified_glob_root_context;
+
+  #[test]
+  fn contextified_glob_root_context_is_stable_across_checkout_roots() {
+    let first =
+      contextified_glob_root_context("/checkout-a/project", "/checkout-a/project/packages/app");
+    let second =
+      contextified_glob_root_context("/checkout-b/project", "/checkout-b/project/packages/app");
+
+    assert_eq!(first, "./packages/app");
+    assert_eq!(first, second);
+  }
 }

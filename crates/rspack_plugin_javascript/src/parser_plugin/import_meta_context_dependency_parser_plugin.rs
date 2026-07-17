@@ -318,6 +318,18 @@ fn normalize_import_meta_glob_patterns(
   }
 }
 
+fn import_meta_glob_root_context(patterns: &[String], compiler_context: &str) -> Option<String> {
+  patterns
+    .iter()
+    .any(|pattern| {
+      pattern
+        .strip_prefix('!')
+        .unwrap_or(pattern)
+        .starts_with('/')
+    })
+    .then(|| normalize_path_separators_for_path(compiler_context))
+}
+
 fn glob_patterns_are_recursive(
   patterns: &[ResolvedContextModuleGlobPattern],
   common_base_dir: &str,
@@ -466,6 +478,8 @@ fn create_import_meta_glob_dependency(
     )
   };
   let recursive = glob_patterns_are_recursive(&resolved_glob_patterns, &base_dir);
+  let glob_root_context =
+    import_meta_glob_root_context(&glob_patterns, parser.compiler_options.context.as_str());
 
   let referenced_specifiers = glob_import
     .as_ref()
@@ -492,9 +506,7 @@ fn create_import_meta_glob_dependency(
     glob_import,
     glob_exhaustive,
     glob_case_sensitive,
-    glob_root_context: Some(normalize_path_separators_for_path(
-      parser.compiler_options.context.as_str(),
-    )),
+    glob_root_context,
     ..Default::default()
   };
   Some(ImportMetaContextDependency::new_glob(
@@ -558,5 +570,35 @@ impl<'p, 'a> JavascriptParserPlugin<'p, 'a> for ImportMetaContextDependencyParse
     } else {
       None
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::import_meta_glob_root_context;
+
+  #[test]
+  fn import_meta_glob_root_context_is_only_kept_for_root_relative_patterns() {
+    let compiler_context = "/repo/app";
+
+    assert_eq!(
+      import_meta_glob_root_context(
+        &["./src/*.js".into(), "!./src/skip.js".into()],
+        compiler_context
+      ),
+      None
+    );
+    assert_eq!(
+      import_meta_glob_root_context(&["/src/*.js".into()], compiler_context).as_deref(),
+      Some(compiler_context)
+    );
+    assert_eq!(
+      import_meta_glob_root_context(
+        &["./src/*.js".into(), "!/src/skip.js".into()],
+        compiler_context
+      )
+      .as_deref(),
+      Some(compiler_context)
+    );
   }
 }
