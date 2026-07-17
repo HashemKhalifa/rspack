@@ -90,7 +90,7 @@ fn create_resource_identifier_for_context_dependency(
   let glob_root_context = options
     .glob_root_context
     .as_ref()
-    .map(|context| format!("globRootContext: {context}"))
+    .map(|context| format!(" globRootContext: {context}"))
     .unwrap_or_default();
   let mut group_options = String::new();
 
@@ -112,7 +112,7 @@ fn create_resource_identifier_for_context_dependency(
   }
 
   let id = format!(
-    "context{context}|ctx request{request} {recursive} {pattern} {include} {exclude} {mode} {group_options} {referenced_exports} {glob_import} {glob_exhaustive} {glob_case_sensitive} {glob_root_context}",
+    "context{context}|ctx request{request} {recursive} {pattern} {include} {exclude} {mode} {group_options} {referenced_exports} {glob_import} {glob_exhaustive} {glob_case_sensitive}{glob_root_context}",
   );
   id.into()
 }
@@ -190,4 +190,40 @@ fn context_dependency_template_as_id(
     None,
   );
   source.replace_static(range.end, range.end, ")", None);
+}
+
+#[cfg(test)]
+mod tests {
+  use rspack_core::ContextOptions;
+
+  use super::create_resource_identifier_for_context_dependency;
+
+  #[test]
+  fn context_dependency_resource_identifier_only_appends_present_glob_root_context() {
+    let options = ContextOptions {
+      request: "./request".into(),
+      glob_case_sensitive: false,
+      ..Default::default()
+    };
+
+    let without_root =
+      create_resource_identifier_for_context_dependency(Some("/issuer"), &options).to_string();
+    assert!(
+      without_root.ends_with(" globCaseInsensitive"),
+      "unexpected identifier tail: {without_root:?}"
+    );
+    assert!(!without_root.ends_with(' '));
+
+    let options = ContextOptions {
+      glob_root_context: Some("/repo/app".into()),
+      ..options
+    };
+    let with_root =
+      create_resource_identifier_for_context_dependency(Some("/issuer"), &options).to_string();
+    assert!(
+      with_root.ends_with(" globCaseInsensitive globRootContext: /repo/app"),
+      "unexpected identifier tail: {with_root:?}"
+    );
+    assert!(!with_root.ends_with(' '));
+  }
 }
