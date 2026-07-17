@@ -7,7 +7,8 @@ use rspack_fs::ReadableFileSystem;
 use rspack_hook::define_hook;
 use rspack_loader_runner::parse_resource;
 use rspack_paths::{Utf8Path, Utf8PathBuf};
-use rspack_util::node_path::NodePath;
+use rspack_util::{identifier::relative_path_to_request, node_path::NodePath};
+use sugar_path::SugarPath;
 use swc_core::common::util::take::Take;
 use tracing::instrument;
 
@@ -475,6 +476,10 @@ async fn visit_dirs(
       if is_import_meta_glob
         && !glob_exhaustive
         && is_non_exhaustive_import_meta_glob_skipped_dir(dirname)
+        && (glob_case_sensitive
+          || resolved_glob_patterns
+            .as_ref()
+            .is_none_or(|patterns| !glob_pattern_base_reaches_dir(patterns, path.as_str())))
       {
         return false;
       }
@@ -571,6 +576,9 @@ struct ResolvedContextModuleGlobPattern {
   absolute_pattern: String,
   base: String,
   absolute_base: String,
+  request_context: String,
+  walk_base: String,
+  root_relative: bool,
   negative: bool,
 }
 
@@ -596,22 +604,26 @@ fn resolve_context_module_glob_pattern(
     (pattern, false)
   };
   let pattern = normalize_path_separators(pattern);
-  let (base, pattern_to_join) = if let Some(pattern_to_join) = pattern.strip_prefix('/') {
-    (
-      infer_glob_root_context(common_base, extract_glob_base_dir(&pattern)),
-      pattern_to_join,
-    )
-  } else {
-    (
-      if context.is_empty() {
-        common_base.to_string()
-      } else {
-        context.to_string()
-      },
-      pattern.as_str(),
-    )
-  };
+  let (base, pattern_to_join, root_relative) =
+    if let Some(pattern_to_join) = pattern.strip_prefix('/') {
+      (
+        infer_glob_root_context(common_base, extract_glob_base_dir(&pattern)),
+        pattern_to_join,
+        true,
+      )
+    } else {
+      (
+        if context.is_empty() {
+          common_base.to_string()
+        } else {
+          context.to_string()
+        },
+        pattern.as_str(),
+        false,
+      )
+    };
   let base = normalize_path_separators_for_path(&base);
+  let request_context = base.clone();
   let escaped_base = escape_glob_pattern(&base);
   let absolute_pattern = Utf8Path::new(&escaped_base)
     .node_join_posix(pattern_to_join)
@@ -620,11 +632,15 @@ fn resolve_context_module_glob_pattern(
   let absolute_pattern = normalize_path_separators(&absolute_pattern);
   let base = extract_glob_base_dir(&pattern).to_string();
   let absolute_base = unescape_glob_path(extract_glob_base_dir(&absolute_pattern));
+  let walk_base = normalize_path_separators_for_path(common_base);
 
   ResolvedContextModuleGlobPattern {
     absolute_pattern,
     base,
     absolute_base,
+    request_context,
+    walk_base,
+    root_relative,
     negative,
   }
 }
@@ -656,6 +672,27 @@ fn is_non_exhaustive_import_meta_glob_skipped_dir(dirname: &str) -> bool {
   dirname == "node_modules" || dirname.starts_with('.')
 }
 
+fn glob_pattern_base_reaches_dir(patterns: &[ResolvedContextModuleGlobPattern], dir: &str) -> bool {
+  let normalized_dir = normalize_path_separators_for_path(dir);
+  let dir_with_slash = if normalized_dir.ends_with('/') {
+    normalized_dir
+  } else {
+    format!("{normalized_dir}/")
+  };
+  let lowercase_dir = dir_with_slash.to_lowercase();
+  patterns
+    .iter()
+    .filter(|pattern| !pattern.negative)
+    .any(|pattern| {
+      let base = if pattern.absolute_base.ends_with('/') {
+        pattern.absolute_base.clone()
+      } else {
+        format!("{}/", pattern.absolute_base)
+      };
+      base.to_lowercase().starts_with(&lowercase_dir)
+    })
+}
+
 fn glob_user_request(
   patterns: &[ResolvedContextModuleGlobPattern],
   path: &str,
@@ -676,6 +713,16 @@ fn glob_user_request(
     return None;
   }
 
+  if !case_sensitive {
+    let relative_path = normalized_path.as_path().relative(&matched.request_context);
+    let relative_path = normalize_path_separators_for_path(&relative_path.to_string_lossy());
+    return Some(if matched.root_relative {
+      format!("/{}", relative_path.trim_start_matches('/'))
+    } else {
+      relative_path_to_request(&relative_path).into_owned()
+    });
+  }
+
   let suffix = normalized_path
     .strip_prefix(&matched.absolute_base)
     .unwrap_or(normalized_path.as_str())
@@ -693,10 +740,15 @@ fn glob_pattern_matches(
   exhaustive: bool,
   case_sensitive: bool,
 ) -> bool {
+  let match_base = if case_sensitive {
+    &pattern.absolute_base
+  } else {
+    &pattern.walk_base
+  };
   glob_match_normalized_with_explicit_dot(
     &pattern.absolute_pattern,
     normalized_path,
-    &pattern.absolute_base,
+    match_base,
     &GlobMatchOptions {
       case_sensitive,
       require_literal_leading_dot: !exhaustive,
