@@ -459,6 +459,11 @@ async fn visit_dirs(
         patterns,
         &options.context_options.context,
         ctx,
+        options
+          .context_options
+          .glob_root_context
+          .as_deref()
+          .unwrap_or(ctx),
       ))
     } else {
       None
@@ -586,10 +591,11 @@ fn resolve_context_module_glob_patterns(
   patterns: &[String],
   context: &str,
   common_base: &str,
+  root_context: &str,
 ) -> Vec<ResolvedContextModuleGlobPattern> {
   patterns
     .iter()
-    .map(|pattern| resolve_context_module_glob_pattern(pattern, context, common_base))
+    .map(|pattern| resolve_context_module_glob_pattern(pattern, context, common_base, root_context))
     .collect()
 }
 
@@ -597,6 +603,7 @@ fn resolve_context_module_glob_pattern(
   pattern: &str,
   context: &str,
   common_base: &str,
+  root_context: &str,
 ) -> ResolvedContextModuleGlobPattern {
   let (pattern, negative) = if let Some(pattern) = pattern.strip_prefix('!') {
     (pattern, true)
@@ -606,11 +613,7 @@ fn resolve_context_module_glob_pattern(
   let pattern = normalize_path_separators(pattern);
   let (base, pattern_to_join, root_relative) =
     if let Some(pattern_to_join) = pattern.strip_prefix('/') {
-      (
-        infer_glob_root_context(common_base, extract_glob_base_dir(&pattern)),
-        pattern_to_join,
-        true,
-      )
+      (root_context.to_string(), pattern_to_join, true)
     } else {
       (
         if context.is_empty() {
@@ -643,29 +646,6 @@ fn resolve_context_module_glob_pattern(
     root_relative,
     negative,
   }
-}
-
-fn infer_glob_root_context(common_base: &str, pattern_base: &str) -> String {
-  let mut common_base = normalize_path_separators_for_path(common_base);
-  if !common_base.ends_with('/') {
-    common_base.push('/');
-  }
-  let pattern_base = pattern_base.trim_start_matches('/');
-  let mut matched_len = 0;
-  for idx in pattern_base
-    .char_indices()
-    .map(|(idx, _)| idx)
-    .chain(std::iter::once(pattern_base.len()))
-  {
-    if !pattern_base[..idx].ends_with('/') && idx != pattern_base.len() {
-      continue;
-    }
-    if common_base.ends_with(&pattern_base[..idx]) {
-      matched_len = idx;
-    }
-  }
-
-  common_base[..common_base.len() - matched_len].to_string()
 }
 
 fn is_non_exhaustive_import_meta_glob_skipped_dir(dirname: &str) -> bool {
@@ -849,4 +829,18 @@ fn alternative_requests(
   }
 
   items
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn root_relative_glob_uses_explicit_root_context() {
+    let pattern =
+      resolve_context_module_glob_pattern("/app/*.JS", "/repo/app/src", "/repo/app", "/repo/app");
+
+    assert_eq!(pattern.absolute_pattern, "/repo/app/app/*.JS");
+    assert_eq!(pattern.request_context, "/repo/app");
+  }
 }

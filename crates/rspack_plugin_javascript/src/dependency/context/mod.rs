@@ -87,6 +87,11 @@ fn create_resource_identifier_for_context_dependency(
   } else {
     "globCaseInsensitive"
   };
+  let glob_root_context = options
+    .glob_root_context
+    .as_ref()
+    .map(|context| format!("globRootContext: {context}"))
+    .unwrap_or_default();
   let mut group_options = String::new();
 
   if let Some(GroupOptions::ChunkGroup(group)) = &options.group_options {
@@ -107,7 +112,7 @@ fn create_resource_identifier_for_context_dependency(
   }
 
   let id = format!(
-    "context{context}|ctx request{request} {recursive} {pattern} {include} {exclude} {mode} {group_options} {referenced_exports} {glob_import} {glob_exhaustive} {glob_case_sensitive}",
+    "context{context}|ctx request{request} {recursive} {pattern} {include} {exclude} {mode} {group_options} {referenced_exports} {glob_import} {glob_exhaustive} {glob_case_sensitive} {glob_root_context}",
   );
   id.into()
 }

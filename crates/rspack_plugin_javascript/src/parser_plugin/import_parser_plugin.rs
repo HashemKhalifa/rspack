@@ -503,6 +503,7 @@ impl<'p, 'a> JavascriptParserPlugin<'p, 'a> for ImportParserPlugin {
           glob_import: None,
           glob_exhaustive: false,
           glob_case_sensitive: true,
+          glob_root_context: None,
           attributes,
           phase: Some(phase),
         },

@@ -191,6 +191,7 @@ pub struct ContextOptions {
   pub glob_import: Option<String>,
   pub glob_exhaustive: bool,
   pub glob_case_sensitive: bool,
+  pub glob_root_context: Option<String>,
   pub attributes: Option<ImportAttributes>,
   pub phase: Option<ImportPhase>,
 }
@@ -215,6 +216,7 @@ impl Default for ContextOptions {
       glob_import: None,
       glob_exhaustive: false,
       glob_case_sensitive: true,
+      glob_root_context: None,
       attributes: None,
       phase: None,
     }
@@ -1405,6 +1407,10 @@ impl Module for ContextModule {
     if !self.options.context_options.glob_case_sensitive {
       id += " globCaseInsensitive";
     }
+    if let Some(root_context) = &self.options.context_options.glob_root_context {
+      id += " globRootContext: ";
+      id += root_context;
+    }
     Some(Cow::Owned(id))
   }
 
@@ -1617,6 +1623,10 @@ fn create_identifier(options: &ContextModuleOptions, resource: Option<&str>) -> 
   }
   if !options.context_options.glob_case_sensitive {
     id += "|globCaseInsensitive";
+  }
+  if let Some(root_context) = &options.context_options.glob_root_context {
+    id += "|globRootContext: ";
+    id += root_context;
   }
 
   if let Some(GroupOptions::ChunkGroup(group)) = &options.context_options.group_options {
